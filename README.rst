@@ -1,7 +1,8 @@
 ****************************************
-HIPOCHAT: Websocket chat server, supports notifications and keep the old messages
+HIPOCHAT: Websocket chat server
 ****************************************
 
+Supports notifications and keep the old messages
 
 Hipochat is an open-source websocket chat server, using RabbitMQ as message queue, Tornado as Backend Server and
 Redis for persistent data.
@@ -15,11 +16,12 @@ How it works
 
 First clone the project
 
-    **git clone https://github.com/Hipo/hipochat.git**
+**git clone https://github.com/Hipo/hipochat.git**
 
 
 Then install the requirements
-    **pip install -r requirements.txt**
+
+**pip install -r requirements.txt**
 
 
 Make sure that you have redis-server and rabbitmq servers are running
@@ -33,6 +35,7 @@ vars.py::
     RABBIT_USERNAME = '<RABBITMQ USERNAME>'
     RABBIT_PASS = '<RABBITMQ PASSWORD>'
 
+
 You can check the nginx reverse proxy details
 
 Technical Detail
@@ -45,6 +48,7 @@ Your backend server needs an EP that you should be able to create a chat room or
 
 
 Example request::
+
     HEADER: Authentication: Token <Token>
     URLs: **/api/chat**
 
@@ -56,9 +60,9 @@ Example response::
         }
     }
 
- If room is created you should receive '201 CREATED' MESSAGE else if exists '200 OK'
 
- 200 OK means you already have this chat room and you should fetch the old messages
+If room is created you should receive '201 CREATED' MESSAGE else if exists '200 OK'
+200 OK means you already have this chat room and you should fetch the old messages
 
 
 Receive the old messages
