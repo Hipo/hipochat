@@ -34,6 +34,7 @@ vars.py::
     RABBIT_URL = '<RABBITMQ SERVER>'
     RABBIT_USERNAME = '<RABBITMQ USERNAME>'
     RABBIT_PASS = '<RABBITMQ PASSWORD>'
+    REDIS_URL = '<REDIS_URL>'
 
 
 You can check the nginx reverse proxy details

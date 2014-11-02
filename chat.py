@@ -2,19 +2,17 @@ import json
 import requests
 import time
 import redis
+import pika
+
+from _collections import defaultdict
 import tornado.ioloop
 import tornado.web
 import tornado.websocket
 from tornado import gen
-from _collections import defaultdict
+from pika.adapters.tornado_connection import TornadoConnection
 from vars import *
 
-import pika
-from pika.adapters.tornado_connection import TornadoConnection
-
 pika_connected = False
-
-
 websockets = defaultdict(set)
 
 
@@ -38,7 +36,7 @@ class PikaClient(object):
                 print('PikaClient: Already connecting to RabbitMQ')
                 return
 
-        print('PikaClient: Connecting to RabbitMQ on localhost:5672, Object: %s' % (self,))
+        print('PikaClient: Connecting to RabbitMQ on port 5672, Object: %s' % (self,))
 
         self.connecting = True
 
@@ -54,7 +52,7 @@ class PikaClient(object):
         pika_connected = True
 
     def on_connected(self, connection):
-        print('PikaClient: Connected to RabbitMQ on localhost:5672')
+        print('PikaClient: Connected to RabbitMQ on :5672')
         self.connected = True
         self.connection = connection
         self.connection.channel(self.on_channel_open)
@@ -145,7 +143,7 @@ class OldMessagesHandler(tornado.web.RequestHandler):
         auth_token = authentication.get('token')
         if auth_token:
             chat_token = args[0]
-            redis_client = redis.StrictRedis(host='localhost', port=6379, db=0)
+            redis_client = redis.StrictRedis(host=REDIS_URL, port=6379, db=0)
             oldy = redis_client.zrange(chat_token, 0, -1, withscores=True)
             redis_client.set('%s-%s-%s' % ('message', chat_token, auth_token), 0)
             new_oldy = []
@@ -171,7 +169,7 @@ class ItemMessageHandler(tornado.web.RequestHandler):
         pika_client.declare_queue(chat_token)
 
         if auth_token:
-            redis_client = redis.StrictRedis(host='localhost', port=6379, db=0)
+            redis_client = redis.StrictRedis(host=REDIS_URL, port=6379, db=0)
             pika_client.sample_message(self.request.body)
             members = self.redis_client.smembers('%s-%s' % ('members', self.chat_token))
             members.discard(auth_token)
@@ -213,7 +211,7 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
             self.finish()
 
     def on_message(self, message):
-        self.redis_client = redis.StrictRedis(host='localhost', port=6379, db=0)
+        self.redis_client = redis.StrictRedis(host=REDIS_URL, port=6379, db=0)
         r = self.redis_client
         ts = time.time()
         message = json.dumps(json.loads(message))
@@ -243,7 +241,7 @@ class NotificationHandler(tornado.web.RequestHandler):
         auth_token = authenticate(self.request).get('token')
         chat_token = args[0]
         if auth_token:
-            redis_client = redis.StrictRedis(host='localhost', port=6379, db=0)
+            redis_client = redis.StrictRedis(host=REDIS_URL, port=6379, db=0)
             self.clear()
             self.set_status(200)
             self.finish()
@@ -253,7 +251,7 @@ class NotificationHandler(tornado.web.RequestHandler):
         chat_token = args[0]
         _type = self.request.arguments.get('type')[0]
         if auth_token:
-            redis_client = redis.StrictRedis(host='localhost', port=6379, db=0)
+            redis_client = redis.StrictRedis(host=REDIS_URL, port=6379, db=0)
             number = redis_client.get('%s-%s-%s' % (_type, chat_token, auth_token))
             self.write(json.dumps({'notification': number}))
 
