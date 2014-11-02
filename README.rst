@@ -15,15 +15,17 @@ How it works
 
 First clone the project
 
-    `git clone https://github.com/Hipo/hipochat.git`
+    **git clone https://github.com/Hipo/hipochat.git**
 
 
 Then install the requirements
-    `pip install -r requirements.txt`
+    **pip install -r requirements.txt**
 
 
 Make sure that you have redis-server and rabbitmq servers are running
-Set your variables in vars.py
+Set your variables in 
+
+vars.py::
 
     PushNotificationURL = '<ENDPOINT RECEIVES YOUR PUSH NOTIFICATION SIGNAL AND SEND AN PN>'
     ProfileURL = '<ENDPOINT YOU CAN ASK IF USER IS AUTHENTICATED>'
