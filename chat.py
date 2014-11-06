@@ -146,6 +146,8 @@ class OldMessagesHandler(tornado.web.RequestHandler):
             redis_client = redis.StrictRedis(host=REDIS_URL, port=6379, db=0)
             oldy = redis_client.zrange(chat_token, 0, -1, withscores=True)
             redis_client.set('%s-%s-%s' % ('message', chat_token, auth_token), 0)
+            redis_client.set('%s-%s-%s' % ('item', chat_token, auth_token), 0)
+
             new_oldy = []
             for i in  oldy:
                 data = json.loads(i[0])
@@ -171,11 +173,11 @@ class ItemMessageHandler(tornado.web.RequestHandler):
         if auth_token:
             redis_client = redis.StrictRedis(host=REDIS_URL, port=6379, db=0)
             pika_client.sample_message(self.request.body)
-            members = self.redis_client.smembers('%s-%s' % ('members', self.chat_token))
+            members = redis_client.smembers('%s-%s' % ('members', chat_token))
             members.discard(auth_token)
             for other in members:
             # INCREASE THE NOTIFICATION COUNT FOR USERS OTHER THAN CURRENT USER
-                self.redis_client.incr('%s-%s-%s'%('item', chat_token, other))
+                redis_client.incr('%s-%s-%s' % ('item', chat_token, other))
 
             ts = time.time()
             redis_client.zadd(chat_token, ts, self.request.body)
@@ -195,11 +197,11 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
         self.authentication_token = authentication.get('token')
 
         self.redis_client = redis.StrictRedis(host='localhost', port=6379, db=0)
-        # KEEP THE LIST OF CHAT USERS
-        self.redis_client.sadd('%s-%s' % ('members', self.chat_token), self.authentication_token)
 
         # WHEN USER OPENS A CONNECTION SET NOTIFICATIONS TO 0
-        self.redis_client.set('%s-%s-%s' % ('message' , self.chat_token, self.authentication_token), 0)
+        self.redis_client.set('%s-%s-%s' % ('message', self.chat_token, self.authentication_token), 0)
+        self.redis_client.set('%s-%s-%s' % ('item', self.chat_token, self.authentication_token), 0)
+
 
         pika_client.declare_queue(self.chat_token)
         if self.authentication_token:
@@ -256,9 +258,27 @@ class NotificationHandler(tornado.web.RequestHandler):
             self.write(json.dumps({'notification': number}))
 
 
+class NewChatRoomHandler(tornado.web.RequestHandler):
+
+    # SEND THE CHAT ROOM USERS ARRAY
+    def post(self, *args, **kwargs):
+        chat_token = args[0]
+        if self.request.body_arguments.get('tokens'):
+            redis_client = redis.StrictRedis(host='localhost', port=6379, db=0)
+            data = self.request.body_arguments
+            for token in data['tokens']:
+                redis_client.sadd('%s-%s' % ('members', chat_token), token)
+            self.clear()
+            self.set_status(200)
+            self.finish()
+        else:
+            self.set_status(400)
+            self.finish()
+
 app = tornado.web.Application([(r'/talk/chat/([a-zA-Z\-0-9\.:,_]+)/?', WebSocketChatHandler),
                                (r'/talk/item/([a-zA-Z\-0-9\.:,_]+)/?', ItemMessageHandler),
                                (r'/talk/notification/([a-zA-Z\-0-9\.:,_]+)/?', NotificationHandler),
+                               (r'/talk/new-chat-room/([a-zA-Z\-0-9\.:,_]+)/?', NewChatRoomHandler),
                                (r'/talk/old/([a-zA-Z\-0-9\.:,_]+)/?', OldMessagesHandler),
                                (r'/talk/?', IndexHandler)])
 
