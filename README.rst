@@ -147,3 +147,5 @@ You can receive the notifications count of chat rooms for authenticated user
 by sending a request like below
 
     HTTP GET **/talk/notification/<chat_token>/?type=<type>**
+
+Got some of the code from https://github.com/haridas/RabbitChat
