@@ -1,7 +1,6 @@
 import json
 import requests
 import time
-import redis
 import pika
 
 from _collections import defaultdict
@@ -143,7 +142,7 @@ class OldMessagesHandler(tornado.web.RequestHandler):
         auth_token = authentication.get('token')
         if auth_token:
             chat_token = args[0]
-            redis_client = redis.StrictRedis(host=REDIS_URL, port=6379, db=0)
+            redis_client = REDIS_CONNECTION
             oldy = redis_client.zrange(chat_token, 0, -1, withscores=True)
             redis_client.set('%s-%s-%s' % ('message', chat_token, auth_token), 0)
             redis_client.set('%s-%s-%s' % ('item', chat_token, auth_token), 0)
@@ -171,7 +170,7 @@ class ItemMessageHandler(tornado.web.RequestHandler):
         pika_client.declare_queue(chat_token)
 
         if auth_token:
-            redis_client = redis.StrictRedis(host=REDIS_URL, port=6379, db=0)
+            redis_client = REDIS_CONNECTION
             pika_client.sample_message(self.request.body)
             members = redis_client.smembers('%s-%s' % ('members', chat_token))
             members.discard(auth_token)
@@ -196,7 +195,7 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
         authentication = authenticate(self.request, type='socket')
         self.authentication_token = authentication.get('token')
 
-        self.redis_client = redis.StrictRedis(host='localhost', port=6379, db=0)
+        self.redis_client = REDIS_CONNECTION
 
         # WHEN USER OPENS A CONNECTION SET NOTIFICATIONS TO 0
         self.redis_client.set('%s-%s-%s' % ('message', self.chat_token, self.authentication_token), 0)
@@ -213,7 +212,7 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
             self.finish()
 
     def on_message(self, message):
-        self.redis_client = redis.StrictRedis(host=REDIS_URL, port=6379, db=0)
+        self.redis_client = REDIS_CONNECTION
         r = self.redis_client
         ts = time.time()
         message = json.dumps(json.loads(message))
@@ -237,13 +236,14 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
     def on_close(self):
         websockets[self.chat_token].discard(self)
 
+
 class NotificationHandler(tornado.web.RequestHandler):
 
     def post(self, *args, **kwargs):
         auth_token = authenticate(self.request).get('token')
         chat_token = args[0]
         if auth_token:
-            redis_client = redis.StrictRedis(host=REDIS_URL, port=6379, db=0)
+            redis_client = REDIS_CONNECTION
             self.clear()
             self.set_status(200)
             self.finish()
@@ -253,7 +253,7 @@ class NotificationHandler(tornado.web.RequestHandler):
         chat_token = args[0]
         _type = self.request.arguments.get('type')[0]
         if auth_token:
-            redis_client = redis.StrictRedis(host=REDIS_URL, port=6379, db=0)
+            redis_client = REDIS_CONNECTION
             number = redis_client.get('%s-%s-%s' % (_type, chat_token, auth_token))
             self.write(json.dumps({'notification': number}))
 
@@ -264,7 +264,7 @@ class NewChatRoomHandler(tornado.web.RequestHandler):
     def post(self, *args, **kwargs):
         chat_token = args[0]
         if self.request.body_arguments.get('tokens'):
-            redis_client = redis.StrictRedis(host='localhost', port=6379, db=0)
+            redis_client = REDIS_CONNECTION
             data = self.request.body_arguments
             for token in data['tokens']:
                 redis_client.sadd('%s-%s' % ('members', chat_token), token)
@@ -274,6 +274,7 @@ class NewChatRoomHandler(tornado.web.RequestHandler):
         else:
             self.set_status(400)
             self.finish()
+
 
 app = tornado.web.Application([(r'/talk/chat/([a-zA-Z\-0-9\.:,_]+)/?', WebSocketChatHandler),
                                (r'/talk/item/([a-zA-Z\-0-9\.:,_]+)/?', ItemMessageHandler),

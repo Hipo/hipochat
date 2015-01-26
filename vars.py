@@ -1,6 +1,7 @@
+
 PushNotificationURL = ''
 ProfileURL = ''
 RABBIT_URL = ''
 RABBIT_USERNAME = ''
 RABBIT_PASS = ''
-REDIS_URL = ''
+REDIS_CONNECTION = None
