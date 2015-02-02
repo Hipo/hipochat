@@ -215,9 +215,9 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
         self.redis_client = REDIS_CONNECTION
         r = self.redis_client
         ts = time.time()
-        message = json.dumps(json.loads(message))
-        r.zadd(self.chat_token, ts, message)
         message_dict = json.loads(message)
+        message_dict.update({'timestamp': ts})
+        r.zadd(self.chat_token, ts, json.dumps(message_dict))
         message_dict.update({'token': self.chat_token})
         pika_client.sample_message(json.dumps(message_dict))
 
