@@ -11,6 +11,9 @@ from tornado import gen
 from pika.adapters.tornado_connection import TornadoConnection
 import os
 
+import logging
+logger = logging.getLogger(__name__)
+
 PUSH_NOTIFICATION_URL = os.getenv('HIPOCHAT_PUSH_NOTIFICATION_URL', None)
 if not PUSH_NOTIFICATION_URL:
     raise Exception('we need a push notification url, please pass environment variable: HIPOCHAT_PUSH_NOTIFICATION_URL')
@@ -24,11 +27,15 @@ if not PROFILE_URL:
     raise Exception('we need a push notification url, please pass environment variable: HIPOCHAT_RABBIT_URL')
 
 RABBIT_USERNAME = os.getenv('HIPOCHAT_RABBIT_USERNAME', 'guest')
-RABBIT_PASS = os.getenv('HIPOCHAT_RABBIT_PASS', 'gues')
+RABBIT_PASS = os.getenv('HIPOCHAT_RABBIT_PASS', 'guest')
 
 REDIS_HOST = os.getenv('HIPOCHAT_REDIS_HOST', 'localhost')
 REDIS_PORT = os.getenv('HIPOCHAT_REDIS_PORT', 6379)
 REDIS_DB = os.getenv('HIPOCHAT_REDIS_DB', 0)
+
+PORT = os.getenv('HIPOCHAT_LISTEN_PORT', 8888)
+ADDRESS = os.getenv('HIPOCHAT_LISTEN_ADDRESS', '0.0.0.0')
+
 
 # some sanity checks
 import redis
@@ -56,10 +63,10 @@ class PikaClient(object):
     def connect(self):
 
         if self.connecting:
-                print('PikaClient: Already connecting to RabbitMQ')
+                logger.info('PikaClient: Already connecting to RabbitMQ')
                 return
 
-        print('PikaClient: Connecting to RabbitMQ on port 5672, Object: %s' % (self,))
+        logger.info('PikaClient: Connecting to RabbitMQ on port 5672, Object: %s', self)
 
         self.connecting = True
 
@@ -75,15 +82,13 @@ class PikaClient(object):
         pika_connected = True
 
     def on_connected(self, connection):
-        print('PikaClient: Connected to RabbitMQ on :5672')
+        logger.info('PikaClient: Connected to RabbitMQ on :5672')
         self.connected = True
         self.connection = connection
         self.connection.channel(self.on_channel_open)
 
     def on_channel_open(self, channel):
-
-        print('PikaClient: Channel Open, Declaring Exchange, Channel ID: %s' %
-              (channel,))
+        logger.info('PikaClient: Channel Open, Declaring Exchange, Channel ID: %s', channel)
         self.channel = channel
 
         self.channel.exchange_declare(exchange='tornado',
@@ -92,7 +97,7 @@ class PikaClient(object):
                                       auto_delete=True)
 
     def declare_queue(self, token):
-        print('PikaClient: Exchange Declared, Declaring Queue')
+        logger.info('PikaClient: Exchange Declared, Declaring Queue')
         self.queue_name = token
         self.channel.queue_declare(queue=self.queue_name,
                                    durable=False,
@@ -106,21 +111,20 @@ class PikaClient(object):
                                 callback=self.on_queue_bound)
 
     def on_queue_bound(self, frame):
-        print('PikaClient: Queue Bound, Issuing Basic Consume')
+        logger.info('PikaClient: Queue Bound, Issuing Basic Consume')
         self.channel.basic_consume(consumer_callback=self.on_pika_message,
                                    queue=self.queue_name,
                                    no_ack=True)
 
     def on_pika_message(self, channel, method, header, body):
-        print('PikaCient: Message receive, delivery tag #%i' %
-              method.delivery_tag)
+        logger.info('PikaCient: Message receive, delivery tag #%i', method.delivery_tag)
         message = json.loads(body)
 
         for i in websockets[message['token']]:
             i.write_message(body)
 
     def on_basic_cancel(self, frame):
-        print('PikaClient: Basic Cancel Ok')
+        logger.info('PikaClient: Basic Cancel Ok')
         # If we don't have any more consumer processes running close
         self.connection.close()
 
@@ -147,7 +151,7 @@ def authenticate(request, **kwargs):
         return None
 
     headers = {'Authorization': 'Token %s' % token}
-    req = requests.get(ProfileURL, headers=headers)
+    req = requests.get(PROFILE_URL, headers=headers)
     return {'token': token} if req.status_code == 200 else False
 
 
@@ -214,7 +218,7 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
 
     @gen.coroutine
     def open(self, *args, **kwargs):
-        print 'new connection'
+        logger.info('new connection')
         self.chat_token = args[0]
         authentication = authenticate(self.request, type='socket')
         self.authentication_token = authentication.get('token')
@@ -255,7 +259,7 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
         headers = {'Authorization': 'Token %s' % self.authentication_token}
         if len(websockets[self.chat_token]) <=1:
             data = {'chat_token': self.chat_token, 'type': 'message'}
-            requests.post(PushNotificationURL, data=data, headers=headers)
+            requests.post(PUSH_NOTIFICATION_URL, data=data, headers=headers)
 
     def on_close(self):
         websockets[self.chat_token].discard(self)
@@ -307,7 +311,7 @@ app = tornado.web.Application([(r'/talk/chat/([a-zA-Z\-0-9\.:,_]+)/?', WebSocket
                                (r'/talk/old/([a-zA-Z\-0-9\.:,_]+)/?', OldMessagesHandler),
                                (r'/talk/?', IndexHandler)])
 
-app.listen(8888)
+app.listen(PORT, ADDRESS)
 ioloop = tornado.ioloop.IOLoop.instance()
 pika_client = PikaClient(ioloop)
 pika_client.connect()
