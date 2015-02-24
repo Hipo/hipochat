@@ -9,7 +9,31 @@ import tornado.web
 import tornado.websocket
 from tornado import gen
 from pika.adapters.tornado_connection import TornadoConnection
-from vars import *
+import os
+
+PUSH_NOTIFICATION_URL = os.getenv('HIPOCHAT_PUSH_NOTIFICATION_URL', None)
+if not PUSH_NOTIFICATION_URL:
+    raise Exception('we need a push notification url, please pass environment variable: HIPOCHAT_PUSH_NOTIFICATION_URL')
+
+PROFILE_URL = os.getenv('HIPOCHAT_PROFILE_URL', None)
+if not PROFILE_URL:
+    raise Exception('we need a push notification url, please pass environment variable: HIPOCHAT_PROFILE_URL')
+
+RABBIT_URL = os.getenv('HIPOCHAT_RABBIT_URL', None)
+if not PROFILE_URL:
+    raise Exception('we need a push notification url, please pass environment variable: HIPOCHAT_RABBIT_URL')
+
+RABBIT_USERNAME = os.getenv('HIPOCHAT_RABBIT_USERNAME', 'guest')
+RABBIT_PASS = os.getenv('HIPOCHAT_RABBIT_PASS', 'gues')
+
+REDIS_HOST = os.getenv('HIPOCHAT_REDIS_HOST', 'localhost')
+REDIS_PORT = os.getenv('HIPOCHAT_REDIS_PORT', 6379)
+REDIS_DB = os.getenv('HIPOCHAT_REDIS_DB', 0)
+
+# some sanity checks
+import redis
+REDIS_CONNECTION = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
+REDIS_CONNECTION.ping()
 
 pika_connected = False
 websockets = defaultdict(set)
