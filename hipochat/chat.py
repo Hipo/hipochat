@@ -10,6 +10,7 @@ import tornado.websocket
 from tornado import gen
 from pika.adapters.tornado_connection import TornadoConnection
 import os
+from tornado.httpclient import AsyncHTTPClient
 
 import logging
 logging.basicConfig(level=logging.INFO)
@@ -143,19 +144,27 @@ class PikaClient(object):
                                    body=ws_msg,
                                    properties=properties)
 
-
+@gen.coroutine
 def authenticate(request, **kwargs):
     if kwargs.get('type') != 'socket' and request.headers.get('Authorization'):
         token = request.headers.get('Authorization').split('Token ')[1]
     elif request.arguments.get('token'):
         token = request.arguments.get('token')[0]
     else:
-        return None
+        raise gen.Return(None)
 
     headers = {'Authorization': 'Token %s' % token}
-    req = requests.get(PROFILE_URL, headers=headers)
-    return {'token': token} if req.status_code == 200 else False
+    ac = AsyncHTTPClient()
+    try:
+        response = yield ac.fetch(PROFILE_URL, headers=headers)
+    except:
+        logger.exception("exception when authenticating")
+        raise gen.Return(None)
 
+    if response.code == 200:
+        raise gen.Return({'token': token})
+    else:
+        raise gen.Return(None)
 
 class IndexHandler(tornado.web.RequestHandler):
 
@@ -168,8 +177,11 @@ class OldMessagesHandler(tornado.web.RequestHandler):
 
     @gen.coroutine
     def get(self, *args, **kwargs):
-        authentication = authenticate(self.request)
-        auth_token = authentication.get('token')
+        authentication = yield authenticate(self.request)
+        if authentication:
+            auth_token = authentication.get('token')
+        else:
+            auth_token = None
         if auth_token:
             chat_token = args[0]
             redis_client = REDIS_CONNECTION
@@ -195,17 +207,20 @@ class ItemMessageHandler(tornado.web.RequestHandler):
     @gen.coroutine
     def post(self, *args, **kwargs):
         chat_token = args[0]
-        authentication = authenticate(self.request)
-        auth_token = authentication.get('token')
-        pika_client.declare_queue(chat_token)
+        authentication = yield authenticate(self.request)
+        if authentication:
+            auth_token = authentication.get('token')
+        else:
+            auth_token = None
 
         if auth_token:
+            pika_client.declare_queue(chat_token)
             redis_client = REDIS_CONNECTION
             pika_client.sample_message(self.request.body)
             members = redis_client.smembers('%s-%s' % ('members', chat_token))
             members.discard(auth_token)
             for other in members:
-            # INCREASE THE NOTIFICATION COUNT FOR USERS OTHER THAN CURRENT USER
+                # INCREASE THE NOTIFICATION COUNT FOR USERS OTHER THAN CURRENT USER
                 redis_client.incr('%s-%s-%s' % ('item', chat_token, other))
 
             ts = time.time()
@@ -222,8 +237,11 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
     def open(self, *args, **kwargs):
         logger.info('new connection')
         self.chat_token = args[0]
-        authentication = authenticate(self.request, type='socket')
-        self.authentication_token = authentication.get('token')
+        authentication = yield authenticate(self.request, type='socket')
+        if authentication:
+            self.authentication_token = authentication.get('token', None)
+        else:
+            self.authentication_token = None
 
         self.redis_client = REDIS_CONNECTION
 
@@ -231,15 +249,19 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
         self.redis_client.set('%s-%s-%s' % ('message', self.chat_token, self.authentication_token), 0)
         self.redis_client.set('%s-%s-%s' % ('item', self.chat_token, self.authentication_token), 0)
 
-
         pika_client.declare_queue(self.chat_token)
         if self.authentication_token:
             pika_client.websocket = self
             websockets[self.chat_token].add(self)
         else:
+            logger.info("not authenticated... !!!")
             self.clear()
-            self.set_status(400)
-            self.finish()
+            self.write_message(json.dumps(dict({"ERROR": "authentication error"})))
+            self.close()
+            self.on_close()
+
+    def push_message_sent(self, *args, **kwargs):
+        logger.info("push message sent")
 
     def on_message(self, message):
         self.redis_client = REDIS_CONNECTION
@@ -261,16 +283,22 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
         headers = {'Authorization': 'Token %s' % self.authentication_token}
         if len(websockets[self.chat_token]) <=1:
             data = {'chat_token': self.chat_token, 'type': 'message'}
-            requests.post(PUSH_NOTIFICATION_URL, data=data, headers=headers)
+            logger.info("sending push notification")
+            ac = AsyncHTTPClient()
+            ac.fetch(PUSH_NOTIFICATION_URL, method="POST", body=json.dumps(data), headers=headers, callback=self.push_message_sent)
 
     def on_close(self):
+        logger.info("closing connection")
         websockets[self.chat_token].discard(self)
 
 
 class NotificationHandler(tornado.web.RequestHandler):
 
     def post(self, *args, **kwargs):
-        auth_token = authenticate(self.request).get('token')
+        auth_token = yield authenticate(self.request)
+        if auth_token:
+            auth_token = auth_token.get('token')
+
         chat_token = args[0]
         if auth_token:
             redis_client = REDIS_CONNECTION
@@ -279,10 +307,12 @@ class NotificationHandler(tornado.web.RequestHandler):
             self.finish()
 
     def get(self, *args, **kwargs):
-        auth_token = authenticate(self.request).get('token')
-        chat_token = args[0]
-        _type = self.request.arguments.get('type')[0]
+        auth_token = yield authenticate(self.request)
         if auth_token:
+            auth_token = auth_token.get('token')
+        if auth_token:
+            chat_token = args[0]
+            _type = self.request.arguments.get('type')[0]
             redis_client = REDIS_CONNECTION
             number = redis_client.get('%s-%s-%s' % (_type, chat_token, auth_token))
             self.write(json.dumps({'notification': number}))
