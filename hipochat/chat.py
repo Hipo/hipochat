@@ -12,7 +12,9 @@ from pika.adapters.tornado_connection import TornadoConnection
 import os
 
 import logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 
 PUSH_NOTIFICATION_URL = os.getenv('HIPOCHAT_PUSH_NOTIFICATION_URL', None)
 if not PUSH_NOTIFICATION_URL:
@@ -310,6 +312,8 @@ app = tornado.web.Application([(r'/talk/chat/([a-zA-Z\-0-9\.:,_]+)/?', WebSocket
                                (r'/talk/new-chat-room/([a-zA-Z\-0-9\.:,_]+)/?', NewChatRoomHandler),
                                (r'/talk/old/([a-zA-Z\-0-9\.:,_]+)/?', OldMessagesHandler),
                                (r'/talk/?', IndexHandler)])
+
+logger.info("Listening to %s:%s", ADDRESS, PORT)
 
 app.listen(PORT, ADDRESS)
 ioloop = tornado.ioloop.IOLoop.instance()

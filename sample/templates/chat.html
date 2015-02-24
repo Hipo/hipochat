@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Hipochat test</title>
+
+    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.2/css/bootstrap.min.css">
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.11.2/jquery.min.js"></script>
+    <script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.2/js/bootstrap.min.js"></script>
+
+    <!-- HTML5 shim and Respond.js for IE8 support of HTML5 elements and media queries -->
+    <!-- WARNING: Respond.js doesn't work if you view the page via file:// -->
+    <!--[if lt IE 9]>
+      <script src="https://oss.maxcdn.com/html5shiv/3.7.2/html5shiv.min.js"></script>
+      <script src="https://oss.maxcdn.com/respond/1.4.2/respond.min.js"></script>
+    <![endif]-->
+
+    <style>
+    #header {
+        min-height: 80px;
+        background-color: #000;
+        border-bottom: #900;
+    }
+
+    #header {
+        color: #FFF;
+    }
+
+    .red {
+        color: #900;
+    }
+
+    .green {
+        color: #090;
+    }
+
+    .orange {
+        color: #890;
+    }
+
+    #chatarea {
+        height: 600px;
+        overflow: auto;
+    }
+
+    #nm {
+        width: 100%;
+    }
+
+    </style>
+
+    <script>
+        $(function(){
+
+            var ws = new WebSocket(
+                'ws://localhost:8888/talk/chat/31a6e593-cccc-cccc-808c-e0bd9ea5b274/?token=123234455667'
+            )
+
+            ws.onclose = function(){
+                $('#status').attr('class', 'orange').html('closed');
+            }
+
+            ws.onerror = function(e){
+                console.log("error", e)
+                $('#status').attr('class', 'red').html('error');
+                console.log(e.data)
+
+            }
+
+            ws.onmessage = function(e){
+                console.log("message", e)
+                $('#messages').append('<li> Received: <<< ' + e.data + '</li>')
+                $('#messages li:last')[0].scrollIntoView()
+            }
+
+            ws.onopen = function(){
+                $('#status').attr('class', 'green').html('connected');
+                chat.sendMessage('hello')
+            }
+
+            function generateUUID(){
+                var d = new Date().getTime();
+                var uuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                    var r = (d + Math.random()*16)%16 | 0;
+                    d = Math.floor(d/16);
+                    return (c=='x' ? r : (r&0x3|0x8)).toString(16);
+                });
+                return uuid;
+            }
+
+            var chat = {
+                sendMessage: function(message, status){
+                    data = {}
+                    data['body'] = message;
+                    data['type'] = 'message';
+                    data['clientId'] = chat.clientId;
+                    data['status'] = status || "connnected";
+                    var s = JSON.stringify(data);
+                    ws.send(s)
+                    $('#messages').append('<li> Sending: >>> ' + s + '</li>')
+                    $('#messages li:last')[0].scrollIntoView()
+                }
+
+            }
+            chat.clientId = generateUUID()
+
+            $('#nm').on('keyup', function(evt){
+                if (evt.keyCode == 13){
+                    console.log("h", $('#nm').val())
+                    chat.sendMessage({message: $('#nm').val().replace('\n', '')})
+                    $('#nm').val('')
+                }
+            })
+
+        })
+    </script>
+
+
+  </head>
+  <body>
+    <div id="header">
+        <div class="container">
+            <h3>Hipo Chat</h3>
+        </div>
+    </div>
+    <div id="content" class="container">
+        <div>
+            <h5>Websocket status <span id="status"></span></h5>
+        </div>
+
+        <div id="chatarea">
+            <ul id="messages">
+            </ul>
+        </div>
+        <div id="newmessage" width="100%">
+            <textarea id="nm" class="form-control" placeHolder="type your message and hit ENTER"></textarea>
+        </div>
+
+
+    </div>
+  </body>
+</html>
