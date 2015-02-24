@@ -124,7 +124,10 @@ class PikaClient(object):
         message = json.loads(body)
 
         for i in websockets[message['token']]:
-            i.write_message(body)
+            try:
+                i.write_message(body)
+            except:
+                logger.exception("exception while writing message to client")
 
     def on_basic_cancel(self, frame):
         logger.info('PikaClient: Basic Cancel Ok')
@@ -182,6 +185,7 @@ class OldMessagesHandler(tornado.web.RequestHandler):
             auth_token = authentication.get('token')
         else:
             auth_token = None
+
         if auth_token:
             chat_token = args[0]
             redis_client = REDIS_CONNECTION
@@ -280,12 +284,13 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
         # INCREASE THE NOTIFICATION COUNT FOR USERS OTHER THAN CURRENT USER
             self.redis_client.incr('%s-%s-%s'%('message', self.chat_token, other))
 
-        headers = {'Authorization': 'Token %s' % self.authentication_token}
+        headers = {'Authorization': 'Token %s' % self.authentication_token, 'Content-Type': 'application/json'}
         if len(websockets[self.chat_token]) <=1:
-            data = {'chat_token': self.chat_token, 'type': 'message'}
+            data = {'chat_token': self.chat_token, 'type': 'message', 'data': message_dict}
             logger.info("sending push notification")
             ac = AsyncHTTPClient()
-            ac.fetch(PUSH_NOTIFICATION_URL, method="POST", body=json.dumps(data), headers=headers, callback=self.push_message_sent)
+            ac.fetch(PUSH_NOTIFICATION_URL, method="POST", body=json.dumps(data),
+                     headers=headers, callback=self.push_message_sent)
 
     def on_close(self):
         logger.info("closing connection")
@@ -343,10 +348,13 @@ app = tornado.web.Application([(r'/talk/chat/([a-zA-Z\-0-9\.:,_]+)/?', WebSocket
                                (r'/talk/old/([a-zA-Z\-0-9\.:,_]+)/?', OldMessagesHandler),
                                (r'/talk/?', IndexHandler)])
 
-logger.info("Listening to %s:%s", ADDRESS, PORT)
+pika_client = None
 
-app.listen(PORT, ADDRESS)
-ioloop = tornado.ioloop.IOLoop.instance()
-pika_client = PikaClient(ioloop)
-pika_client.connect()
-ioloop.start()
+def run():
+    global pika_client
+    logger.info("Listening to %s:%s", ADDRESS, PORT)
+    app.listen(PORT, ADDRESS)
+    ioloop = tornado.ioloop.IOLoop.instance()
+    pika_client = PikaClient(ioloop)
+    pika_client.connect()
+    ioloop.start()

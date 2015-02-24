@@ -43,6 +43,41 @@
     #chatarea {
         height: 600px;
         overflow: auto;
+        height: 600px;
+        overflow: auto;
+        border: 1px solid #900;
+        padding: 5px;
+        margin-bottom: 12px;
+        border-radius: 8px;
+    }
+
+    #chatarea ul {
+        padding-left: 5px;
+    }
+
+    #chatarea ul li {
+        list-style: none;
+        text-decoration: none;
+        font-family: sans-serif;
+        margin-top: 8px;
+        margin-bottom: 4px;
+        clear:both;
+        min-height: 48px;
+        height: 48px;
+        position: relative;
+        border-bottom: 1px dashed #ccc;
+    }
+
+    #chatarea ul li img#icon {
+        margin-right: 10px;
+        float: left;
+    }
+
+    #chatarea ul li div.bottom {
+        font-size: 10px;
+        color: #999;
+        left: 45px;
+        bottom: 0px;
     }
 
     #nm {
@@ -51,67 +86,116 @@
 
     </style>
 
+    <script src="//cdnjs.cloudflare.com/ajax/libs/blueimp-md5/1.0.1/js/md5.min.js"></script>
+
     <script>
+
+        function generateUUID(){
+            var d = new Date().getTime();
+            var uuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                var r = (d + Math.random()*16)%16 | 0;
+                d = Math.floor(d/16);
+                return (c=='x' ? r : (r&0x3|0x8)).toString(16);
+            });
+            return uuid;
+        }
+
+        var ws_url = 'ws://localhost:8888/talk/chat/room_hipo/?token=TOKEN_';
+
+        var ws;
+
+
+            var connect_to_ws = function (email){
+                $('#askemail').hide();
+                $('#chatarea,#websocketstatus').show();
+                $('#newmessage').show();
+
+                ws = new WebSocket(
+                    ws_url + email
+                )
+
+                ws.onclose = function(){
+                    $('#status').attr('class', 'orange').html('closed');
+                }
+
+                ws.onerror = function(e){
+                    console.log("error", e)
+                    $('#status').attr('class', 'red').html('error');
+                    console.log(e.data)
+
+                }
+
+                ws.onmessage = function(e){
+                    console.log("message", e)
+                    var d = JSON.parse(e.data);
+                    if (d.type == 'statusupdate'){
+                        console.log(e.data);
+                        // $('#messages').append('<li> Received: <<< ' + e.data + '</li>')
+                        // $('#messages li:last')[0].scrollIntoView()
+                    } else {
+
+                        var name = d.email.split('@')[0];
+                        var ago = (new Date()).toLocaleString()
+
+                        $('#messages').append(
+                                '<li ><img id="icon" src="http://gravatar.com/avatar/' + md5(d.email) + '?d=retro&s=40" width="40" height="40">' +
+                                d.body.message +
+                                '<div class="bottom">'+name+' - '+ago+'</div>' +
+                                '</li>'
+                        )
+                        $('#messages li:last')[0].scrollIntoView()
+                    }
+                }
+
+                ws.onopen = function(){
+                    $('#status').attr('class', 'green').html('connected');
+                    setTimeout(function(){
+                        chat.sendMessage('hello', null, "statusupdate")
+                    }, 100)
+                }
+
+                var chat = {
+                    sendMessage: function(message, status, messageType){
+                        data = {}
+                        data['body'] = message;
+                        data['type'] = messageType || 'message';
+                        data['clientId'] = chat.clientId;
+                        data['status'] = status || "connnected";
+                        data['email'] = email;
+                        var s = JSON.stringify(data);
+                        ws.send(s)
+                        console.log(s);
+                        // $('#messages').append('<li> Sending: >>> ' + s + '</li>')
+                        // $('#messages li:last')[0].scrollIntoView()
+                    }
+
+                }
+                chat.clientId = generateUUID()
+
+                $('#nm').on('keyup', function(evt){
+                    if (evt.keyCode == 13){
+                        console.log("h", $('#nm').val())
+                        chat.sendMessage({message: $('#nm').val().replace('\n', '')})
+                        $('#nm').val('')
+                    }
+                })
+
+            }
+
+
         $(function(){
 
-            var ws = new WebSocket(
-                'ws://localhost:8888/talk/chat/31a6e593-cccc-cccc-808c-e0bd9ea5b274/?token=123234455667'
-            )
+            $('#chatarea,#websocketstatus').hide();
+            $('#newmessage').hide();
 
-            ws.onclose = function(){
-                $('#status').attr('class', 'orange').html('closed');
-            }
-
-            ws.onerror = function(e){
-                console.log("error", e)
-                $('#status').attr('class', 'red').html('error');
-                console.log(e.data)
-
-            }
-
-            ws.onmessage = function(e){
-                console.log("message", e)
-                $('#messages').append('<li> Received: <<< ' + e.data + '</li>')
-                $('#messages li:last')[0].scrollIntoView()
-            }
-
-            ws.onopen = function(){
-                $('#status').attr('class', 'green').html('connected');
-                chat.sendMessage('hello')
-            }
-
-            function generateUUID(){
-                var d = new Date().getTime();
-                var uuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-                    var r = (d + Math.random()*16)%16 | 0;
-                    d = Math.floor(d/16);
-                    return (c=='x' ? r : (r&0x3|0x8)).toString(16);
-                });
-                return uuid;
-            }
-
-            var chat = {
-                sendMessage: function(message, status){
-                    data = {}
-                    data['body'] = message;
-                    data['type'] = 'message';
-                    data['clientId'] = chat.clientId;
-                    data['status'] = status || "connnected";
-                    var s = JSON.stringify(data);
-                    ws.send(s)
-                    $('#messages').append('<li> Sending: >>> ' + s + '</li>')
-                    $('#messages li:last')[0].scrollIntoView()
+            $('#start').on('click', function(){
+                var eml = $('#email').val();
+                if (!eml || eml.indexOf('@') < 3){
+                    alert('please enter your email');
+                    return;
                 }
+                connect_to_ws(eml);
 
-            }
-            chat.clientId = generateUUID()
-
-            $('#nm').on('keyup', function(evt){
-                if (evt.keyCode == 13){
-                    console.log("h", $('#nm').val())
-                    chat.sendMessage({message: $('#nm').val().replace('\n', '')})
-                    $('#nm').val('')
-                }
             })
 
         })
@@ -125,8 +209,17 @@
             <h3>Hipo Chat</h3>
         </div>
     </div>
+
+
     <div id="content" class="container">
-        <div>
+
+        <div id="askemail" style="margin-top:30px;">
+            <input type="text" class="form-control" placeHolder="Enter your email" id="email"/>
+            <br>
+            <button class="btn btn-normal" id="start">Start</button>
+        </div>
+
+        <div id="websocketstatus">
             <h5>Websocket status <span id="status"></span></h5>
         </div>
 
@@ -137,7 +230,6 @@
         <div id="newmessage" width="100%">
             <textarea id="nm" class="form-control" placeHolder="type your message and hit ENTER"></textarea>
         </div>
-
 
     </div>
   </body>
