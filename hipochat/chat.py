@@ -10,7 +10,7 @@ import tornado.websocket
 from tornado import gen
 from pika.adapters.tornado_connection import TornadoConnection
 import os
-from tornado.httpclient import AsyncHTTPClient
+from tornado.httpclient import AsyncHTTPClient, HTTPRequest
 
 import logging
 logging.basicConfig(level=logging.INFO)
@@ -52,16 +52,11 @@ websockets = defaultdict(set)
 class PikaClient(object):
 
     def __init__(self, io_loop):
-
-        # Construct a queue name we'll use for this instance only
-
-        # Default values
         self.connected = False
         self.connecting = False
         self.connection = None
         self.channel = None
         self.ioloop = io_loop
-        #Webscoket object.
 
     def connect(self):
 
@@ -122,7 +117,7 @@ class PikaClient(object):
     def on_pika_message(self, channel, method, header, body):
         logger.info('PikaCient: Message receive, delivery tag #%i', method.delivery_tag)
         message = json.loads(body)
-
+        # TODO: decrement unread count
         for i in websockets[message['token']]:
             try:
                 i.write_message(body)
@@ -225,8 +220,8 @@ class ItemMessageHandler(tornado.web.RequestHandler):
             members.discard(auth_token)
             for other in members:
                 # INCREASE THE NOTIFICATION COUNT FOR USERS OTHER THAN CURRENT USER
-                redis_client.incr('%s-%s-%s' % ('item', chat_token, other))
-
+                redis_client.incr('%s-%s-%s' % ('message', chat_token, other))
+            # TODO: timezone unaware
             ts = time.time()
             redis_client.zadd(chat_token, ts, self.request.body)
         else:
@@ -280,17 +275,24 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
         # GET THE OTHER USERS OTHER THAN THE CURRENT
         members = self.redis_client.smembers('%s-%s' % ('members', self.chat_token))
         members.discard(self.authentication_token)
-        for other in members:
-        # INCREASE THE NOTIFICATION COUNT FOR USERS OTHER THAN CURRENT USER
-            self.redis_client.incr('%s-%s-%s'%('message', self.chat_token, other))
 
-        headers = {'Authorization': 'Token %s' % self.authentication_token, 'Content-Type': 'application/json'}
-        if len(websockets[self.chat_token]) <=1:
-            data = {'chat_token': self.chat_token, 'type': 'message', 'data': message_dict}
-            logger.info("sending push notification")
-            ac = AsyncHTTPClient()
-            ac.fetch(PUSH_NOTIFICATION_URL, method="POST", body=json.dumps(data),
-                     headers=headers, callback=self.push_message_sent)
+        for other in members:
+            # INCREASE THE NOTIFICATION COUNT FOR USERS OTHER THAN CURRENT USER
+            self.redis_client.incr('%s-%s-%s' % ('message', self.chat_token, other))
+
+        headers = {'Authorization': 'Token %s' % self.authentication_token, 'content-type': 'application/json'}
+        [members.discard(socket.authentication_token) for socket in websockets[self.chat_token]]
+
+        data = {'chat_token': self.chat_token,
+                'receivers': list(members),
+                'body': message_dict['body'],
+                'type': 'message',
+                'author_id': message_dict.get('author', None)}
+
+        client = AsyncHTTPClient()
+        request = HTTPRequest(PUSH_NOTIFICATION_URL, body=json.dumps(data), headers=headers, method='POST')
+        client.fetch(request, callback=self.push_message_sent)
+
 
     def on_close(self):
         logger.info("closing connection")
@@ -304,9 +306,7 @@ class NotificationHandler(tornado.web.RequestHandler):
         if auth_token:
             auth_token = auth_token.get('token')
 
-        chat_token = args[0]
         if auth_token:
-            redis_client = REDIS_CONNECTION
             self.clear()
             self.set_status(200)
             self.finish()
@@ -317,9 +317,8 @@ class NotificationHandler(tornado.web.RequestHandler):
             auth_token = auth_token.get('token')
         if auth_token:
             chat_token = args[0]
-            _type = self.request.arguments.get('type')[0]
             redis_client = REDIS_CONNECTION
-            number = redis_client.get('%s-%s-%s' % (_type, chat_token, auth_token))
+            number = redis_client.get('%s-%s-%s' % ("message", chat_token, auth_token))
             self.write(json.dumps({'notification': number}))
 
 
