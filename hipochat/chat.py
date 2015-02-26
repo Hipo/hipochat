@@ -176,29 +176,26 @@ class OldMessagesHandler(tornado.web.RequestHandler):
     @gen.coroutine
     def get(self, *args, **kwargs):
         authentication = yield authenticate(self.request)
-        if authentication:
-            auth_token = authentication.get('token')
-        else:
-            auth_token = None
-
-        if auth_token:
-            chat_token = args[0]
-            redis_client = REDIS_CONNECTION
-            oldy = redis_client.zrange(chat_token, 0, -1, withscores=True)
-            redis_client.set('%s-%s-%s' % ('message', chat_token, auth_token), 0)
-            redis_client.set('%s-%s-%s' % ('item', chat_token, auth_token), 0)
-
-            new_oldy = []
-            for i in  oldy:
-                data = json.loads(i[0])
-                data['timestamp'] = i[1]
-                new_oldy.append(data)
-            self.set_header("Content-Type", "application/json")
-            self.write(json.dumps({'oldy': new_oldy}))
-        else:
+        if not authentication:
             self.clear()
             self.set_status(400)
             self.finish()
+            return
+
+        auth_token = authentication.get('token')
+        chat_token = args[0]
+        redis_client = REDIS_CONNECTION
+        oldy = redis_client.zrange(chat_token, 0, -1, withscores=True)
+        redis_client.set('%s-%s-%s' % ('message', chat_token, auth_token), 0)
+        redis_client.set('%s-%s-%s' % ('item', chat_token, auth_token), 0)
+
+        new_oldy = []
+        for i in  oldy:
+            data = json.loads(i[0])
+            data['timestamp'] = i[1]
+            new_oldy.append(data)
+        self.set_header("Content-Type", "application/json")
+        self.write(json.dumps({'oldy': new_oldy}))
 
 
 class ItemMessageHandler(tornado.web.RequestHandler):
@@ -207,27 +204,24 @@ class ItemMessageHandler(tornado.web.RequestHandler):
     def post(self, *args, **kwargs):
         chat_token = args[0]
         authentication = yield authenticate(self.request)
-        if authentication:
-            auth_token = authentication.get('token')
-        else:
-            auth_token = None
-
-        if auth_token:
-            pika_client.declare_queue(chat_token)
-            redis_client = REDIS_CONNECTION
-            pika_client.sample_message(self.request.body)
-            members = redis_client.smembers('%s-%s' % ('members', chat_token))
-            members.discard(auth_token)
-            for other in members:
-                # INCREASE THE NOTIFICATION COUNT FOR USERS OTHER THAN CURRENT USER
-                redis_client.incr('%s-%s-%s' % ('message', chat_token, other))
-            # TODO: timezone unaware
-            ts = time.time()
-            redis_client.zadd(chat_token, ts, self.request.body)
-        else:
+        if not authentication:
             self.clear()
             self.set_status(400)
             self.finish()
+            return
+
+        auth_token = authentication.get('token')
+        pika_client.declare_queue(chat_token)
+        redis_client = REDIS_CONNECTION
+        pika_client.sample_message(self.request.body)
+        members = redis_client.smembers('%s-%s' % ('members', chat_token))
+        members.discard(auth_token)
+        for other in members:
+            # INCREASE THE NOTIFICATION COUNT FOR USERS OTHER THAN CURRENT USER
+            redis_client.incr('%s-%s-%s' % ('message', chat_token, other))
+        # TODO: timezone unaware
+        ts = time.time()
+        redis_client.zadd(chat_token, ts, self.request.body)
 
 
 class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
@@ -237,11 +231,16 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
         logger.info('new connection')
         self.chat_token = args[0]
         authentication = yield authenticate(self.request, type='socket')
-        if authentication:
-            self.authentication_token = authentication.get('token', None)
-        else:
+        if not authentication:
             self.authentication_token = None
+            logger.info("not authenticated... !!!")
+            self.clear()
+            self.write_message(json.dumps(dict({"ERROR": "authentication error"})))
+            self.close()
+            self.on_close()
+            return
 
+        self.authentication_token = authentication.get('token', None)
         self.redis_client = REDIS_CONNECTION
 
         # WHEN USER OPENS A CONNECTION SET NOTIFICATIONS TO 0
@@ -249,15 +248,8 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
         self.redis_client.set('%s-%s-%s' % ('item', self.chat_token, self.authentication_token), 0)
 
         pika_client.declare_queue(self.chat_token)
-        if self.authentication_token:
-            pika_client.websocket = self
-            websockets[self.chat_token].add(self)
-        else:
-            logger.info("not authenticated... !!!")
-            self.clear()
-            self.write_message(json.dumps(dict({"ERROR": "authentication error"})))
-            self.close()
-            self.on_close()
+        pika_client.websocket = self
+        websockets[self.chat_token].add(self)
 
     def push_message_sent(self, *args, **kwargs):
         logger.info("push message sent")
@@ -301,25 +293,18 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
 
 class NotificationHandler(tornado.web.RequestHandler):
 
-    def post(self, *args, **kwargs):
-        auth_token = yield authenticate(self.request)
-        if auth_token:
-            auth_token = auth_token.get('token')
-
-        if auth_token:
-            self.clear()
-            self.set_status(200)
-            self.finish()
-
+    @gen.coroutine
     def get(self, *args, **kwargs):
         auth_token = yield authenticate(self.request)
-        if auth_token:
-            auth_token = auth_token.get('token')
-        if auth_token:
-            chat_token = args[0]
-            redis_client = REDIS_CONNECTION
-            number = redis_client.get('%s-%s-%s' % ("message", chat_token, auth_token))
-            self.write(json.dumps({'notification': number}))
+        if not auth_token:
+            self.set_status(403)
+            self.finish()
+
+        auth_token = auth_token.get('token')
+        chat_token = args[0]
+        redis_client = REDIS_CONNECTION
+        number = redis_client.get('%s-%s-%s' % ("message", chat_token, auth_token))
+        self.write(json.dumps({'notification': number}))
 
 
 class NewChatRoomHandler(tornado.web.RequestHandler):
@@ -339,12 +324,49 @@ class NewChatRoomHandler(tornado.web.RequestHandler):
             self.set_status(400)
             self.finish()
 
+class HistoryHandler(tornado.web.RequestHandler):
+
+    @gen.coroutine
+    def get(self, room_list):
+
+        # chat_token = args[0]
+        # if self.request.body_arguments.get('token'):
+        #     redis_client = REDIS_CONNECTION
+        #     data = self.request.body_arguments
+        #     for token in data['tokens']:
+        #         redis_client.sadd('%s-%s' % ('members', chat_token), token)
+        #     self.clear()
+        #     self.set_status(200)
+        #     self.finish()
+        # else:
+
+        auth_token = yield authenticate(self.request)
+        if not auth_token:
+            self.set_status(403)
+            self.finish()
+
+        redis_client = REDIS_CONNECTION
+        content = {}
+        for room in room_list.split(','):
+            content[room] = []
+            room_history = redis_client.zrange(room, 0, 1, withscores=True)
+            for i in  room_history:
+                data = json.loads(i[0])
+                data['timestamp'] = i[1]
+                content[room].append(data)
+
+        self.set_status(200)
+        self.set_header("Content-Type", "application/json")
+        self.write(json.dumps(content))
+        self.finish()
+
 
 app = tornado.web.Application([(r'/talk/chat/([a-zA-Z\-0-9\.:,_]+)/?', WebSocketChatHandler),
                                (r'/talk/item/([a-zA-Z\-0-9\.:,_]+)/?', ItemMessageHandler),
                                (r'/talk/notification/([a-zA-Z\-0-9\.:,_]+)/?', NotificationHandler),
                                (r'/talk/new-chat-room/([a-zA-Z\-0-9\.:,_]+)/?', NewChatRoomHandler),
                                (r'/talk/old/([a-zA-Z\-0-9\.:,_]+)/?', OldMessagesHandler),
+                               (r'/talk/history/([a-zA-Z\-0-9\.:,_]+)/?', HistoryHandler),
                                (r'/talk/?', IndexHandler)])
 
 pika_client = None
