@@ -164,6 +164,7 @@ def authenticate(request, **kwargs):
     else:
         raise gen.Return(None)
 
+
 class IndexHandler(tornado.web.RequestHandler):
 
     @tornado.web.asynchronous
@@ -247,6 +248,10 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
         self.redis_client.set('%s-%s-%s' % ('message', self.chat_token, self.authentication_token), 0)
         self.redis_client.set('%s-%s-%s' % ('item', self.chat_token, self.authentication_token), 0)
 
+        # add user to the channel if it's not there.
+        logger.info("adding {} to channel: {}".format(self.authentication_token, self.chat_token))
+        self.redis_client.sadd('%s-%s' % ('members', self.chat_token), self.authentication_token)
+
         pika_client.declare_queue(self.chat_token)
         pika_client.websocket = self
         websockets[self.chat_token].add(self)
@@ -284,7 +289,6 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
         client = AsyncHTTPClient()
         request = HTTPRequest(PUSH_NOTIFICATION_URL, body=json.dumps(data), headers=headers, method='POST')
         client.fetch(request, callback=self.push_message_sent)
-
 
     def on_close(self):
         logger.info("closing connection")
@@ -324,41 +328,44 @@ class NewChatRoomHandler(tornado.web.RequestHandler):
             self.set_status(400)
             self.finish()
 
+
 class HistoryHandler(tornado.web.RequestHandler):
 
     @gen.coroutine
     def get(self, room_list):
-
-        # chat_token = args[0]
-        # if self.request.body_arguments.get('token'):
-        #     redis_client = REDIS_CONNECTION
-        #     data = self.request.body_arguments
-        #     for token in data['tokens']:
-        #         redis_client.sadd('%s-%s' % ('members', chat_token), token)
-        #     self.clear()
-        #     self.set_status(200)
-        #     self.finish()
-        # else:
 
         auth_token = yield authenticate(self.request)
         if not auth_token:
             self.set_status(403)
             self.finish()
 
+        # get latest message if ?limit=N is not provided.
+        limit = int(self.get_argument("limit", 0))
+        if limit > 0:
+            limit -= 1
+
         redis_client = REDIS_CONNECTION
-        content = {}
+        content = []
         for room in room_list.split(','):
-            content[room] = []
-            room_history = redis_client.zrange(room, 0, 1, withscores=True)
-            for i in  room_history:
+            room_data = {
+                "room_name": room,
+                "messages": [],
+            }
+
+            room_history = redis_client.zrange(room, 0, limit, withscores=True)
+            for i in room_history:
                 data = json.loads(i[0])
-                data['timestamp'] = i[1]
-                content[room].append(data)
+                data['timestamp'] = int(i[1])
+                room_data["messages"].append(data)
+            content.append(room_data)
+
+        content = {"results": content}
 
         self.set_status(200)
         self.set_header("Content-Type", "application/json")
         self.write(json.dumps(content))
         self.finish()
+
 
 
 app = tornado.web.Application([(r'/talk/chat/([a-zA-Z\-0-9\.:,_]+)/?', WebSocketChatHandler),
@@ -370,6 +377,7 @@ app = tornado.web.Application([(r'/talk/chat/([a-zA-Z\-0-9\.:,_]+)/?', WebSocket
                                (r'/talk/?', IndexHandler)])
 
 pika_client = None
+
 
 def run():
     global pika_client
