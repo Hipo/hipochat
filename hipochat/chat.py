@@ -349,6 +349,7 @@ class HistoryHandler(tornado.web.RequestHandler):
         for room in room_list.split(','):
             room_data = {
                 "room_name": room,
+                "unread_count": redis_client.get('%s-%s-%s' % ("message", room, auth_token.get("token"))) or 0,
                 "messages": [],
             }
 
