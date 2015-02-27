@@ -19,6 +19,7 @@ os.environ['HIPOCHAT_REDIS_DB'] = "3"
 import hipochat.chat
 import json
 
+
 class TestChat(unittest.TestCase):
 
     def setUp(self):
@@ -46,9 +47,8 @@ class TestChat(unittest.TestCase):
             'http://127.0.0.1:8888/talk/history/room_hipo,room_foo?token=TOKEN_1234'
         )
         data = json.loads(resp.content)
-        assert data['room_hipo'][0]['body'] == "hello world"
-        assert len(data['room_foo']) == 0
-
+        assert data['results'][0]['messages'][0]["body"] == "hello world"
+        assert len(data['results'][1]["messages"]) == 0
 
     def tearDown(self):
         self.process.terminate()
