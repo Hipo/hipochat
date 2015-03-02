@@ -346,7 +346,7 @@ class NotificationHandler(tornado.web.RequestHandler):
         auth_token = auth_token.get('token')
         chat_token = args[0]
         redis_client = REDIS_CONNECTION
-        number = redis_client.get('%s-%s-%s' % ("message", chat_token, auth_token))
+        number = redis_client.get('%s-%s-%s' % (REGULAR_MESSAGE_TYPE, chat_token, auth_token))
         self.write(json.dumps({'notification': number}))
 
 
@@ -404,7 +404,7 @@ class HistoryHandler(tornado.web.RequestHandler):
         for room in room_list.split(','):
             room_data = {
                 "room_name": room,
-                "unread_count": redis_client.get('%s-%s-%s' % ("message", room, auth_token.get("token"))) or 0,
+                "unread_count": redis_client.get('%s-%s-%s' % (REGULAR_MESSAGE_TYPE, room, auth_token.get("token"))) or 0,
                 "messages": [],
             }
 
