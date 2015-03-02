@@ -54,6 +54,10 @@ pika_connected = False
 websockets = defaultdict(set)
 
 
+def push_notification_callback(*args, **kwargs):
+    logger.info("push notification sent")
+
+
 class PikaClient(object):
 
     def __init__(self, io_loop):
@@ -211,27 +215,27 @@ class ItemMessageHandler(tornado.web.RequestHandler):
     @gen.coroutine
     def post(self, *args, **kwargs):
         chat_token = args[0]
-        authentication = yield authenticate(self.request)
-        if not authentication:
+        profile = yield authenticate(self.request)
+        redis_client = REDIS_CONNECTION
+
+        if not profile:
             self.clear()
             self.set_status(400)
             self.finish()
             return
 
-        auth_token = authentication.get('token')
-        profile = authentication.get('profile')
+        auth_token = profile['token']
         data_type = self.get_argument('type', None)
+        assert data_type in MESSAGE_TYPES, '%s not in MESSAGE_TYPES' % data_type
         pika_client.declare_queue(chat_token)
         ts = calendar.timegm(datetime.datetime.utcnow().timetuple())
 
-        redis_client = REDIS_CONNECTION
         if self.request.body:
             body = json.loads(self.request.body)
         else:
             body = None
 
         data = {'timestamp': ts, 'type': data_type, 'author': profile, 'token': chat_token}
-
         if body:
             data.update({'body': body})
 
@@ -240,24 +244,23 @@ class ItemMessageHandler(tornado.web.RequestHandler):
         members = redis_client.smembers('%s-%s' % ('members', chat_token))
         members.discard(auth_token)
         for other in members:
-            # INCREASE THE NOTIFICATION COUNT FOR USERS OTHER THAN CURRENT USER
+            # Increase notification count for users other than sender
             redis_client.incr('%s-%s-%s' % ('message', chat_token, other))
 
         redis_client.zadd(chat_token, json.dumps(data), ts)
 
-        headers = {'Authorization': 'Token %s' % auth_token, 'content-type': 'application/json'}
-        [members.discard(socket.authentication_token) for socket in websockets[chat_token]]
+        if data_type in NOTIFIABLE_MESSAGE_TYPES:
+            # Send push to only not connected members
+            headers = {'Authorization': 'Token %s' % auth_token, 'content-type': 'application/json'}
+            [members.discard(socket.authentication_token) for socket in websockets[chat_token]]
 
-        data = {'chat_token': chat_token, 'receivers': list(members),
-                'type': data_type, 'author_id': profile.get('id')}
+            data = {'chat_token': chat_token, 'receivers': list(members),
+                    'type': data_type, 'author': profile, 'body': body}
 
-        # TODO: if pushable type then do this
-        if data_type == MESSAGE_TYPE_PHOTO:
-            data.update({'body': body.get('caption', 'Photo')})
             client = AsyncHTTPClient()
-            request = HTTPRequest(PushNotificationURL, body=json.dumps(data),
+            request = HTTPRequest(PUSH_NOTIFICATION_URL, body=json.dumps(data),
                                   headers=headers, method='POST')
-            client.fetch(request, callback=notification_callback)
+            client.fetch(request, callback=push_notification_callback)
 
 
 class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
@@ -288,9 +291,6 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
         pika_client.declare_queue(self.chat_token)
         pika_client.websocket = self
         websockets[self.chat_token].add(self)
-
-    def push_message_sent(self, *args, **kwargs):
-        logger.info("push message sent")
 
     def on_message(self, message):
         self.redis_client = REDIS_CONNECTION
@@ -326,7 +326,7 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
 
         client = AsyncHTTPClient()
         request = HTTPRequest(PUSH_NOTIFICATION_URL, body=json.dumps(data), headers=headers, method='POST')
-        client.fetch(request, callback=self.push_message_sent)
+        client.fetch(request, callback=push_notification_callback)
 
     def on_close(self):
         # TODO: unread messages count
