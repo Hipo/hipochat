@@ -41,7 +41,8 @@ REDIS_DB = os.getenv('HIPOCHAT_REDIS_DB', 0)
 PORT = os.getenv('HIPOCHAT_LISTEN_PORT', 8888)
 ADDRESS = os.getenv('HIPOCHAT_LISTEN_ADDRESS', '0.0.0.0')
 
-mtypes = os.getenv('HIPOCHAT_MESSAGE_TYPES', "message")
+REGULAR_MESSAGE_TYPE = os.getenv('HIPOCHAT_REGULAR_MESSAGE_TYPE', "message")
+mtypes = os.getenv('HIPOCHAT_MESSAGE_TYPES', REGULAR_MESSAGE_TYPE)
 MESSAGE_TYPES = mtypes.split(',')
 
 NOTIFIABLE_MESSAGE_TYPES = os.getenv('HIPOCHAT_NOTIFIABLE_MESSAGE_TYPES', mtypes).split(',')
@@ -198,8 +199,7 @@ class OldMessagesHandler(tornado.web.RequestHandler):
         chat_token = args[0]
         redis_client = REDIS_CONNECTION
         oldy = redis_client.zrange(chat_token, 0, -1, withscores=True)
-        redis_client.set('%s-%s-%s' % ('message', chat_token, auth_token), 0)
-        redis_client.set('%s-%s-%s' % ('item', chat_token, auth_token), 0)
+        redis_client.set('%s-%s-%s' % (REGULAR_MESSAGE_TYPE, chat_token, auth_token), 0)
 
         new_oldy = []
         for i in  oldy:
@@ -245,7 +245,7 @@ class ItemMessageHandler(tornado.web.RequestHandler):
         members.discard(auth_token)
         for other in members:
             # Increase notification count for users other than sender
-            redis_client.incr('%s-%s-%s' % ('message', chat_token, other))
+            redis_client.incr('%s-%s-%s' % (REGULAR_MESSAGE_TYPE, chat_token, other))
 
         redis_client.zadd(chat_token, json.dumps(data), ts)
 
@@ -264,13 +264,15 @@ class ItemMessageHandler(tornado.web.RequestHandler):
 
 
 class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
+    chat_token = None
+    profile = None
+    redis_client = REDIS_CONNECTION
 
     @gen.coroutine
     def open(self, *args, **kwargs):
         logger.info('new connection')
         self.chat_token = args[0]
         self.profile = yield authenticate(self.request, type='socket')
-        self.redis_client = REDIS_CONNECTION
 
         if not self.profile:
             logger.info("not authenticated... !!!")
@@ -282,8 +284,8 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
             self.on_close()
             return
 
-        # WHEN USER OPENS A CONNECTION SET NOTIFICATIONS TO 0
-        self.redis_client.set('%s-%s-%s' % ('message', self.chat_token, self.profile['token']), 0)
+        # When user opens a connection, set notification count to 0
+        self.redis_client.set('%s-%s-%s' % (REGULAR_MESSAGE_TYPE, self.chat_token, self.profile['token']), 0)
         # add user to the channel if it's not there.
         logger.info("adding {} to channel: {}".format(self.profile['token'], self.chat_token))
         self.redis_client.sadd('%s-%s' % ('members', self.chat_token), self.profile['token'])
@@ -293,40 +295,38 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
         websockets[self.chat_token].add(self)
 
     def on_message(self, message):
-        self.redis_client = REDIS_CONNECTION
-        r = self.redis_client
         ts = calendar.timegm(datetime.datetime.utcnow().timetuple())
         message_dict = json.loads(message)
         message_dict.update({'timestamp': ts, 'author': self.profile})
-        r.zadd(self.chat_token, ts, json.dumps(message_dict))
+        self.redis_client.zadd(self.chat_token, ts, json.dumps(message_dict))
 
         message_dict.update({'token': self.chat_token})
         pika_client.sample_message(json.dumps(message_dict))
 
-        # GET THE OTHER USERS OTHER THAN THE CURRENT
         members = self.redis_client.smembers('%s-%s' % ('members', self.chat_token))
         members.discard(self.profile['token'])
 
         for other in members:
-            # INCREASE THE NOTIFICATION COUNT FOR USERS OTHER THAN CURRENT USER
-            self.redis_client.incr('%s-%s-%s' % ('message', self.chat_token, other))
+            # Increase notification count for users other than sender
+            self.redis_client.incr('%s-%s-%s' % (REGULAR_MESSAGE_TYPE, self.chat_token, other))
 
-        self.redis_client.set('%s-%s-%s' % ('message', self.chat_token, self.profile['token']), 0)
+        self.redis_client.set('%s-%s-%s' % (REGULAR_MESSAGE_TYPE, self.chat_token, self.profile['token']), 0)
 
-        headers = {'Authorization': 'Token %s' % self.profile['token'], 'content-type': 'application/json'}
-        [members.discard(socket.profile['token']) for socket in websockets[self.chat_token]]
+        if REGULAR_MESSAGE_TYPE in NOTIFIABLE_MESSAGE_TYPES:
+            headers = {'Authorization': 'Token %s' % self.profile['token'], 'content-type': 'application/json'}
+            [members.discard(socket.profile['token']) for socket in websockets[self.chat_token]]
 
-        # TODO: message type check
-
-        data = {'chat_token': self.chat_token,
+            data = {
+                'chat_token': self.chat_token,
                 'receivers': list(members),
                 'body': message_dict['body'],
-                'type': 'message',
-                'author_id': message_dict.get('author', None)}
+                'type': REGULAR_MESSAGE_TYPE,
+                'author': message_dict['author']
+            }
 
-        client = AsyncHTTPClient()
-        request = HTTPRequest(PUSH_NOTIFICATION_URL, body=json.dumps(data), headers=headers, method='POST')
-        client.fetch(request, callback=push_notification_callback)
+            client = AsyncHTTPClient()
+            request = HTTPRequest(PUSH_NOTIFICATION_URL, body=json.dumps(data), headers=headers, method='POST')
+            client.fetch(request, callback=push_notification_callback)
 
     def on_close(self):
         # TODO: unread messages count
