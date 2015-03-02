@@ -195,19 +195,21 @@ class OldMessagesHandler(tornado.web.RequestHandler):
             self.finish()
             return
 
-        auth_token = authentication.get('token')
+        auth_token = authentication['token']
         chat_token = args[0]
         redis_client = REDIS_CONNECTION
-        oldy = redis_client.zrange(chat_token, 0, -1, withscores=True)
+
+        logout_at = redis_client.get('%s-%s-%s' % (chat_token, auth_token, 'logout_at'))
+        logout_at = calendar.timegm(datetime.datetime.utcnow().timetuple()) if logout_at is None else logout_at
+
+        redis_client.delete('%s-%s-%s' % (chat_token, auth_token, 'logout_at'))
         redis_client.set('%s-%s-%s' % (REGULAR_MESSAGE_TYPE, chat_token, auth_token), 0)
 
-        new_oldy = []
-        for i in  oldy:
-            data = json.loads(i[0])
-            data['timestamp'] = i[1]
-            new_oldy.append(data)
+        read_messages = redis_client.zrangebyscore(chat_token, '-inf', logout_at)
+        unread_messages = redis_client.zrangebyscore(chat_token, logout_at, '+inf')
+
         self.set_header("Content-Type", "application/json")
-        self.write(json.dumps({'oldy': new_oldy}))
+        self.write(json.dumps({'read_messages': read_messages, 'unread_messages': unread_messages}))
 
 
 class ItemMessageHandler(tornado.web.RequestHandler):
@@ -329,9 +331,10 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
             client.fetch(request, callback=push_notification_callback)
 
     def on_close(self):
-        # TODO: unread messages count
         logger.info("closing connection")
         websockets[self.chat_token].discard(self)
+        ts = calendar.timegm(datetime.datetime.utcnow().timetuple())
+        self.redis_client.set('%s-%s-%s' % (self.chat_token, self.profile['token'], 'logout_at'), ts)
 
 
 class NotificationHandler(tornado.web.RequestHandler):
@@ -367,6 +370,7 @@ class NewChatRoomHandler(tornado.web.RequestHandler):
             self.set_status(400)
             self.finish()
 
+
 class UnsubscribeHandler(tornado.web.RequestHandler):
 
     def post(self, *args, **kwargs):
@@ -383,6 +387,7 @@ class UnsubscribeHandler(tornado.web.RequestHandler):
         else:
             self.set_status(400)
             self.finish()
+
 
 class HistoryHandler(tornado.web.RequestHandler):
 
