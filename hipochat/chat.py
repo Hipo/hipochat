@@ -117,6 +117,7 @@ class PikaClient(object):
     def on_pika_message(self, channel, method, header, body):
         logger.info('PikaCient: Message receive, delivery tag #%i', method.delivery_tag)
         message = json.loads(body)
+        # TODO: decrement unread count
         for i in websockets[message['token']]:
             try:
                 i.write_message(body)
@@ -154,14 +155,12 @@ def authenticate(request, **kwargs):
     ac = AsyncHTTPClient()
     try:
         response = yield ac.fetch(PROFILE_URL, headers=headers)
-        profile_dict = json.loads(response.content)
-        profile_dict.update({'token': token})
     except:
         logger.exception("exception when authenticating")
         raise gen.Return(None)
 
     if response.code == 200:
-        raise gen.Return(profile_dict)
+        raise gen.Return({'token': token})
     else:
         raise gen.Return(None)
 
@@ -204,7 +203,6 @@ class ItemMessageHandler(tornado.web.RequestHandler):
 
     @gen.coroutine
     def post(self, *args, **kwargs):
-        import arrow
         chat_token = args[0]
         authentication = yield authenticate(self.request)
         if not authentication:
@@ -214,47 +212,17 @@ class ItemMessageHandler(tornado.web.RequestHandler):
             return
 
         auth_token = authentication.get('token')
-        profile = authentication.get('profile')
-        timezone = authentication.get('timezone')
-        data_type = self.get_argument('type', None)
         pika_client.declare_queue(chat_token)
-
-
         redis_client = REDIS_CONNECTION
-        if self.request.body:
-            body = json.loads(self.request.body)
-        else:
-            body = None
-
-        ts = arrow.now(timezone).timestamp
-        data = {'timestamp': ts, 'type': data_type, 'author': profile, 'token': chat_token}
-
-        if body:
-            data.update({'body': body})
-
-        pika_client.sample_message(json.dumps(data))
-
+        pika_client.sample_message(self.request.body)
         members = redis_client.smembers('%s-%s' % ('members', chat_token))
         members.discard(auth_token)
         for other in members:
             # INCREASE THE NOTIFICATION COUNT FOR USERS OTHER THAN CURRENT USER
             redis_client.incr('%s-%s-%s' % ('message', chat_token, other))
-
-        redis_client.zadd(chat_token, json.dumps(data), ts)
-
-        headers = {'Authorization': 'Token %s' % auth_token, 'content-type': 'application/json'}
-        [members.discard(socket.authentication_token) for socket in websockets[chat_token]]
-
-        data = {'chat_token': chat_token, 'receivers': list(members),
-                'type': data_type, 'author_id': profile.get('id')}
-
-        # TODO: if pushable type then do this
-        if data_type == MESSAGE_TYPE_PHOTO:
-            data.update({'body': body.get('caption', 'Photo')})
-            client = AsyncHTTPClient()
-            request = HTTPRequest(PushNotificationURL, body=json.dumps(data),
-                                  headers=headers, method='POST')
-            client.fetch(request, callback=notification_callback)
+        # TODO: timezone unaware
+        ts = time.time()
+        redis_client.zadd(chat_token, ts, self.request.body)
 
 
 class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
@@ -263,24 +231,26 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
     def open(self, *args, **kwargs):
         logger.info('new connection')
         self.chat_token = args[0]
-        self.profile = yield authenticate(self.request, type='socket')
-        self.redis_client = REDIS_CONNECTION
-
-        if not self.profile:
+        authentication = yield authenticate(self.request, type='socket')
+        if not authentication:
+            self.authentication_token = None
             logger.info("not authenticated... !!!")
             self.clear()
             self.write_message(json.dumps(dict({"ERROR": "authentication error"})))
             self.close()
-            # if client closes the connection on_close is called, if we close the connection
-            # on_close is not triggered, so we call it manually.
             self.on_close()
             return
 
+        self.authentication_token = authentication.get('token', None)
+        self.redis_client = REDIS_CONNECTION
+
         # WHEN USER OPENS A CONNECTION SET NOTIFICATIONS TO 0
-        self.redis_client.set('%s-%s-%s' % ('message', self.chat_token, self.profile['token']), 0)
+        self.redis_client.set('%s-%s-%s' % ('message', self.chat_token, self.authentication_token), 0)
+        self.redis_client.set('%s-%s-%s' % ('item', self.chat_token, self.authentication_token), 0)
+
         # add user to the channel if it's not there.
-        logger.info("adding {} to channel: {}".format(self.profile['token'], self.chat_token))
-        self.redis_client.sadd('%s-%s' % ('members', self.chat_token), self.profile['token'])
+        logger.info("adding {} to channel: {}".format(self.authentication_token, self.chat_token))
+        self.redis_client.sadd('%s-%s' % ('members', self.chat_token), self.authentication_token)
 
         pika_client.declare_queue(self.chat_token)
         pika_client.websocket = self
@@ -292,30 +262,23 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
     def on_message(self, message):
         self.redis_client = REDIS_CONNECTION
         r = self.redis_client
-        import datetime
-        import calendar
-        ts = calendar.timegm(datetime.datetime.utcnow().timetuple())
+        ts = time.time()
         message_dict = json.loads(message)
-        message_dict.update({'timestamp': ts, 'author': self.profile})
+        message_dict.update({'timestamp': ts})
         r.zadd(self.chat_token, ts, json.dumps(message_dict))
-
         message_dict.update({'token': self.chat_token})
         pika_client.sample_message(json.dumps(message_dict))
 
         # GET THE OTHER USERS OTHER THAN THE CURRENT
         members = self.redis_client.smembers('%s-%s' % ('members', self.chat_token))
-        members.discard(self.profile['token'])
+        members.discard(self.authentication_token)
 
         for other in members:
             # INCREASE THE NOTIFICATION COUNT FOR USERS OTHER THAN CURRENT USER
             self.redis_client.incr('%s-%s-%s' % ('message', self.chat_token, other))
 
-        self.redis_client.set('%s-%s-%s' % ('message', self.chat_token, self.profile['token']), 0)
-
-        headers = {'Authorization': 'Token %s' % self.profile['token'], 'content-type': 'application/json'}
-        [members.discard(socket.profile['token']) for socket in websockets[self.chat_token]]
-
-        # TODO: message type check
+        headers = {'Authorization': 'Token %s' % self.authentication_token, 'content-type': 'application/json'}
+        [members.discard(socket.authentication_token) for socket in websockets[self.chat_token]]
 
         data = {'chat_token': self.chat_token,
                 'receivers': list(members),
@@ -328,7 +291,6 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
         client.fetch(request, callback=self.push_message_sent)
 
     def on_close(self):
-        # TODO: unread messages count
         logger.info("closing connection")
         websockets[self.chat_token].discard(self)
 
@@ -366,22 +328,6 @@ class NewChatRoomHandler(tornado.web.RequestHandler):
             self.set_status(400)
             self.finish()
 
-class UnsubscribeHandler(tornado.web.RequestHandler):
-
-    def post(self, *args, **kwargs):
-        # TODO: unsubscribe from rabbitmq, close socket etc...
-        chat_token = args[0]
-        if self.request.body_arguments.get('tokens'):
-            redis_client = REDIS_CONNECTION
-            data = self.request.body_arguments
-            for token in data['tokens']:
-                redis_client.srem('%s-%s' % ('members', chat_token), token)
-            self.clear()
-            self.set_status(200)
-            self.finish()
-        else:
-            self.set_status(400)
-            self.finish()
 
 class HistoryHandler(tornado.web.RequestHandler):
 
@@ -427,7 +373,6 @@ app = tornado.web.Application([(r'/talk/chat/([a-zA-Z\-0-9\.:,_]+)/?', WebSocket
                                (r'/talk/item/([a-zA-Z\-0-9\.:,_]+)/?', ItemMessageHandler),
                                (r'/talk/notification/([a-zA-Z\-0-9\.:,_]+)/?', NotificationHandler),
                                (r'/talk/new-chat-room/([a-zA-Z\-0-9\.:,_]+)/?', NewChatRoomHandler),
-                                (r'/talk/unsubscribe/([a-zA-Z\-0-9\.:,_]+)/?', NewChatRoomHandler),
                                (r'/talk/old/([a-zA-Z\-0-9\.:,_]+)/?', OldMessagesHandler),
                                (r'/talk/history/([a-zA-Z\-0-9\.:,_]+)/?', HistoryHandler),
                                (r'/talk/?', IndexHandler)])
