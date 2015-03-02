@@ -211,7 +211,8 @@ class OldMessagesHandler(tornado.web.RequestHandler):
         unread_messages = redis_client.zrangebyscore(chat_token, logout_at, '+inf')
 
         self.set_header("Content-Type", "application/json")
-        self.write(json.dumps({'read_messages': list(read_messages), 'unread_messages': list(unread_messages) }))
+        messages = dict(read_messages=list(read_messages), unread_messages=list(unread_messages))
+        self.write(json.dumps(dict(results=messages)))
 
 
 class ItemMessageHandler(tornado.web.RequestHandler):
@@ -232,7 +233,7 @@ class ItemMessageHandler(tornado.web.RequestHandler):
         data_type = self.get_argument('type', None)
         assert data_type in MESSAGE_TYPES, '%s not in MESSAGE_TYPES' % data_type
         pika_client.declare_queue(chat_token)
-        ts = calendar.timegm(datetime.datetime.utcnow().timetuple())
+        ts = get_utc_timestamp()
 
         if self.request.body:
             body = json.loads(self.request.body)
@@ -270,6 +271,7 @@ class ItemMessageHandler(tornado.web.RequestHandler):
 def get_utc_timestamp():
     ts = calendar.timegm(datetime.datetime.utcnow().timetuple())
     return ts
+
 
 class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
     chat_token = None
