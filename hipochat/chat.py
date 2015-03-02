@@ -165,7 +165,7 @@ def authenticate(request, **kwargs):
     ac = AsyncHTTPClient()
     try:
         response = yield ac.fetch(PROFILE_URL, headers=headers)
-        profile_dict = json.loads(response.content)
+        profile_dict = json.loads(response.body)
         profile_dict.update({'token': token})
     except:
         logger.exception("exception when authenticating")
@@ -200,7 +200,9 @@ class OldMessagesHandler(tornado.web.RequestHandler):
         redis_client = REDIS_CONNECTION
 
         logout_at = redis_client.get('%s-%s-%s' % (chat_token, auth_token, 'logout_at'))
-        logout_at = calendar.timegm(datetime.datetime.utcnow().timetuple()) if logout_at is None else logout_at
+
+        if logout_at:
+            logout_at = '+inf'
 
         redis_client.delete('%s-%s-%s' % (chat_token, auth_token, 'logout_at'))
         redis_client.set('%s-%s-%s' % (REGULAR_MESSAGE_TYPE, chat_token, auth_token), 0)
@@ -265,6 +267,10 @@ class ItemMessageHandler(tornado.web.RequestHandler):
             client.fetch(request, callback=push_notification_callback)
 
 
+def get_utc_timestamp():
+    ts = calendar.timegm(datetime.datetime.utcnow().timetuple())
+    return ts
+
 class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
     chat_token = None
     profile = None
@@ -297,7 +303,9 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
         websockets[self.chat_token].add(self)
 
     def on_message(self, message):
-        ts = calendar.timegm(datetime.datetime.utcnow().timetuple())
+        self.redis_client = REDIS_CONNECTION
+        r = self.redis_client
+        ts = get_utc_timestamp()
         message_dict = json.loads(message)
         message_dict.update({'timestamp': ts, 'author': self.profile})
         self.redis_client.zadd(self.chat_token, ts, json.dumps(message_dict))
@@ -333,7 +341,7 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
     def on_close(self):
         logger.info("closing connection")
         websockets[self.chat_token].discard(self)
-        ts = calendar.timegm(datetime.datetime.utcnow().timetuple())
+        ts = get_utc_timestamp()
         self.redis_client.set('%s-%s-%s' % (self.chat_token, self.profile['token'], 'logout_at'), ts)
 
 

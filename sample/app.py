@@ -1,6 +1,6 @@
 from flask import Flask, render_template, request
 app = Flask(__name__)
-
+import json
 @app.route('/chat')
 def chat():
     return render_template('chat.html')
@@ -35,7 +35,13 @@ def profile_url():
     :return:
     """
     print "headers", request.headers
-    return 'OK'
+    return json.dumps(
+        dict(
+            user_id=1424791573,
+            name="f",
+            surname="foo"
+        )
+    )
 
 
 if __name__ == '__main__':
