@@ -201,7 +201,7 @@ class OldMessagesHandler(tornado.web.RequestHandler):
 
         logout_at = redis_client.get('%s-%s-%s' % (chat_token, auth_token, 'logout_at'))
 
-        if logout_at:
+        if not logout_at:
             logout_at = '+inf'
 
         redis_client.delete('%s-%s-%s' % (chat_token, auth_token, 'logout_at'))
@@ -211,7 +211,7 @@ class OldMessagesHandler(tornado.web.RequestHandler):
         unread_messages = redis_client.zrangebyscore(chat_token, logout_at, '+inf')
 
         self.set_header("Content-Type", "application/json")
-        self.write(json.dumps({'read_messages': read_messages, 'unread_messages': unread_messages}))
+        self.write(json.dumps({'read_messages': list(read_messages), 'unread_messages': list(unread_messages) }))
 
 
 class ItemMessageHandler(tornado.web.RequestHandler):
