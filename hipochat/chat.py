@@ -13,6 +13,8 @@ from pika.adapters.tornado_connection import TornadoConnection
 from tornado.httpclient import AsyncHTTPClient, HTTPRequest
 import redis
 import logging
+import datetime
+import calendar
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -144,6 +146,7 @@ class PikaClient(object):
                                    body=ws_msg,
                                    properties=properties)
 
+
 @gen.coroutine
 def authenticate(request, **kwargs):
     if kwargs.get('type') != 'socket' and request.headers.get('Authorization'):
@@ -207,7 +210,6 @@ class ItemMessageHandler(tornado.web.RequestHandler):
 
     @gen.coroutine
     def post(self, *args, **kwargs):
-        import arrow
         chat_token = args[0]
         authentication = yield authenticate(self.request)
         if not authentication:
@@ -218,10 +220,9 @@ class ItemMessageHandler(tornado.web.RequestHandler):
 
         auth_token = authentication.get('token')
         profile = authentication.get('profile')
-        timezone = authentication.get('timezone')
         data_type = self.get_argument('type', None)
         pika_client.declare_queue(chat_token)
-
+        ts = calendar.timegm(datetime.datetime.utcnow().timetuple())
 
         redis_client = REDIS_CONNECTION
         if self.request.body:
@@ -229,7 +230,6 @@ class ItemMessageHandler(tornado.web.RequestHandler):
         else:
             body = None
 
-        ts = arrow.now(timezone).timestamp
         data = {'timestamp': ts, 'type': data_type, 'author': profile, 'token': chat_token}
 
         if body:
@@ -295,8 +295,6 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
     def on_message(self, message):
         self.redis_client = REDIS_CONNECTION
         r = self.redis_client
-        import datetime
-        import calendar
         ts = calendar.timegm(datetime.datetime.utcnow().timetuple())
         message_dict = json.loads(message)
         message_dict.update({'timestamp': ts, 'author': self.profile})
