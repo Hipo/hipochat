@@ -208,10 +208,20 @@ class OldMessagesHandler(tornado.web.RequestHandler):
         redis_client.set('%s-%s-%s' % (REGULAR_MESSAGE_TYPE, chat_token, auth_token), 0)
 
         read_messages = redis_client.zrangebyscore(chat_token, '-inf', logout_at)
-        unread_messages = redis_client.zrangebyscore(chat_token, logout_at, '+inf')
+        print "----- read messages ----", logout_at
+        print read_messages
+        print "----- read messages ----"
+
+        unread_messages = redis_client.zrangebyscore(chat_token, '(%s' % logout_at, '+inf')
+        print "----- unread messages ----"
+        print unread_messages
+        print "----- unread messages ----"
+
+        read_messages = [json.loads(v) for v in read_messages]
+        unread_messages = [json.loads(v) for v in unread_messages]
 
         self.set_header("Content-Type", "application/json")
-        messages = dict(read_messages=list(read_messages), unread_messages=list(unread_messages))
+        messages = dict(read_messages=read_messages, unread_messages=unread_messages)
         self.write(json.dumps(dict(results=messages)))
 
 
