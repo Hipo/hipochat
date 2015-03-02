@@ -1,3 +1,4 @@
+import os
 import json
 import requests
 import time
@@ -9,9 +10,8 @@ import tornado.web
 import tornado.websocket
 from tornado import gen
 from pika.adapters.tornado_connection import TornadoConnection
-import os
 from tornado.httpclient import AsyncHTTPClient, HTTPRequest
-
+import redis
 import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -39,9 +39,12 @@ REDIS_DB = os.getenv('HIPOCHAT_REDIS_DB', 0)
 PORT = os.getenv('HIPOCHAT_LISTEN_PORT', 8888)
 ADDRESS = os.getenv('HIPOCHAT_LISTEN_ADDRESS', '0.0.0.0')
 
+mtypes = os.getenv('HIPOCHAT_MESSAGE_TYPES', "message")
+MESSAGE_TYPES = mtypes.split(',')
+
+NOTIFIABLE_MESSAGE_TYPES = os.getenv('HIPOCHAT_NOTIFIABLE_MESSAGE_TYPES', mtypes).split(',')
 
 # some sanity checks
-import redis
 REDIS_CONNECTION = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
 REDIS_CONNECTION.ping()
 
