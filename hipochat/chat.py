@@ -1,6 +1,5 @@
+import os
 import json
-import requests
-import time
 import pika
 
 from _collections import defaultdict
@@ -9,10 +8,11 @@ import tornado.web
 import tornado.websocket
 from tornado import gen
 from pika.adapters.tornado_connection import TornadoConnection
-import os
 from tornado.httpclient import AsyncHTTPClient, HTTPRequest
-
+import redis
 import logging
+import datetime
+import calendar
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -39,14 +39,22 @@ REDIS_DB = os.getenv('HIPOCHAT_REDIS_DB', 0)
 PORT = os.getenv('HIPOCHAT_LISTEN_PORT', 8888)
 ADDRESS = os.getenv('HIPOCHAT_LISTEN_ADDRESS', '0.0.0.0')
 
+REGULAR_MESSAGE_TYPE = os.getenv('HIPOCHAT_REGULAR_MESSAGE_TYPE', "message")
+mtypes = os.getenv('HIPOCHAT_MESSAGE_TYPES', REGULAR_MESSAGE_TYPE)
+MESSAGE_TYPES = mtypes.split(',')
+
+NOTIFIABLE_MESSAGE_TYPES = os.getenv('HIPOCHAT_NOTIFIABLE_MESSAGE_TYPES', mtypes).split(',')
 
 # some sanity checks
-import redis
 REDIS_CONNECTION = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
 REDIS_CONNECTION.ping()
 
 pika_connected = False
 websockets = defaultdict(set)
+
+
+def push_notification_callback(*args, **kwargs):
+    logger.info("push notification sent")
 
 
 class PikaClient(object):
@@ -117,7 +125,6 @@ class PikaClient(object):
     def on_pika_message(self, channel, method, header, body):
         logger.info('PikaCient: Message receive, delivery tag #%i', method.delivery_tag)
         message = json.loads(body)
-        # TODO: decrement unread count
         for i in websockets[message['token']]:
             try:
                 i.write_message(body)
@@ -142,6 +149,7 @@ class PikaClient(object):
                                    body=ws_msg,
                                    properties=properties)
 
+
 @gen.coroutine
 def authenticate(request, **kwargs):
     if kwargs.get('type') != 'socket' and request.headers.get('Authorization'):
@@ -155,12 +163,14 @@ def authenticate(request, **kwargs):
     ac = AsyncHTTPClient()
     try:
         response = yield ac.fetch(PROFILE_URL, headers=headers)
+        profile_dict = json.loads(response.body)
+        profile_dict.update({'token': token})
     except:
         logger.exception("exception when authenticating")
         raise gen.Return(None)
 
     if response.code == 200:
-        raise gen.Return({'token': token})
+        raise gen.Return(profile_dict)
     else:
         raise gen.Return(None)
 
@@ -183,20 +193,27 @@ class OldMessagesHandler(tornado.web.RequestHandler):
             self.finish()
             return
 
-        auth_token = authentication.get('token')
+        auth_token = authentication['token']
         chat_token = args[0]
         redis_client = REDIS_CONNECTION
-        oldy = redis_client.zrange(chat_token, 0, -1, withscores=True)
-        redis_client.set('%s-%s-%s' % ('message', chat_token, auth_token), 0)
-        redis_client.set('%s-%s-%s' % ('item', chat_token, auth_token), 0)
 
-        new_oldy = []
-        for i in  oldy:
-            data = json.loads(i[0])
-            data['timestamp'] = i[1]
-            new_oldy.append(data)
+        logout_at = redis_client.get('%s-%s-%s' % (chat_token, auth_token, 'logout_at'))
+
+        if not logout_at:
+            logout_at = '+inf'
+
+        redis_client.delete('%s-%s-%s' % (chat_token, auth_token, 'logout_at'))
+        redis_client.set('%s-%s-%s' % (REGULAR_MESSAGE_TYPE, chat_token, auth_token), 0)
+
+        read_messages = redis_client.zrangebyscore(chat_token, '-inf', logout_at)
+        unread_messages = redis_client.zrangebyscore(chat_token, '(%s' % logout_at, '+inf')
+
+        read_messages = [json.loads(v) for v in read_messages]
+        unread_messages = [json.loads(v) for v in unread_messages]
+
         self.set_header("Content-Type", "application/json")
-        self.write(json.dumps({'oldy': new_oldy}))
+        messages = dict(read_messages=read_messages, unread_messages=unread_messages)
+        self.write(json.dumps(dict(results=messages)))
 
 
 class ItemMessageHandler(tornado.web.RequestHandler):
@@ -204,95 +221,130 @@ class ItemMessageHandler(tornado.web.RequestHandler):
     @gen.coroutine
     def post(self, *args, **kwargs):
         chat_token = args[0]
-        authentication = yield authenticate(self.request)
-        if not authentication:
+        profile = yield authenticate(self.request)
+        redis_client = REDIS_CONNECTION
+
+        if not profile:
             self.clear()
             self.set_status(400)
             self.finish()
             return
 
-        auth_token = authentication.get('token')
+        auth_token = profile['token']
+        data_type = self.get_argument('type', None)
+        assert data_type in MESSAGE_TYPES, '%s not in MESSAGE_TYPES' % data_type
         pika_client.declare_queue(chat_token)
-        redis_client = REDIS_CONNECTION
-        pika_client.sample_message(self.request.body)
+        ts = get_utc_timestamp()
+
+        if self.request.body:
+            body = json.loads(self.request.body)
+        else:
+            body = None
+
+        data = {'timestamp': ts, 'type': data_type, 'author': profile, 'token': chat_token}
+        if body:
+            data.update({'body': body})
+
+        pika_client.sample_message(json.dumps(data))
+
         members = redis_client.smembers('%s-%s' % ('members', chat_token))
         members.discard(auth_token)
         for other in members:
-            # INCREASE THE NOTIFICATION COUNT FOR USERS OTHER THAN CURRENT USER
-            redis_client.incr('%s-%s-%s' % ('message', chat_token, other))
-        # TODO: timezone unaware
-        ts = time.time()
-        redis_client.zadd(chat_token, ts, self.request.body)
+            # Increase notification count for users other than sender
+            redis_client.incr('%s-%s-%s' % (REGULAR_MESSAGE_TYPE, chat_token, other))
+
+        redis_client.zadd(chat_token, json.dumps(data), ts)
+
+        if data_type in NOTIFIABLE_MESSAGE_TYPES:
+            # Send push to only not connected members
+            headers = {'Authorization': 'Token %s' % auth_token, 'content-type': 'application/json'}
+            [members.discard(socket.profile['token']) for socket in websockets[chat_token]]
+
+            data = {'chat_token': chat_token, 'receivers': list(members),
+                    'type': data_type, 'author': profile, 'body': body}
+
+            client = AsyncHTTPClient()
+            request = HTTPRequest(PUSH_NOTIFICATION_URL, body=json.dumps(data),
+                                  headers=headers, method='POST')
+            client.fetch(request, callback=push_notification_callback)
+
+
+def get_utc_timestamp():
+    ts = calendar.timegm(datetime.datetime.utcnow().timetuple())
+    return ts
 
 
 class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
+    chat_token = None
+    profile = None
+    redis_client = REDIS_CONNECTION
 
     @gen.coroutine
     def open(self, *args, **kwargs):
         logger.info('new connection')
         self.chat_token = args[0]
-        authentication = yield authenticate(self.request, type='socket')
-        if not authentication:
-            self.authentication_token = None
+        self.profile = yield authenticate(self.request, type='socket')
+
+        if not self.profile:
             logger.info("not authenticated... !!!")
             self.clear()
             self.write_message(json.dumps(dict({"ERROR": "authentication error"})))
             self.close()
+            # if client closes the connection on_close is called, if we close the connection
+            # on_close is not triggered, so we call it manually.
             self.on_close()
             return
 
-        self.authentication_token = authentication.get('token', None)
-        self.redis_client = REDIS_CONNECTION
-
-        # WHEN USER OPENS A CONNECTION SET NOTIFICATIONS TO 0
-        self.redis_client.set('%s-%s-%s' % ('message', self.chat_token, self.authentication_token), 0)
-        self.redis_client.set('%s-%s-%s' % ('item', self.chat_token, self.authentication_token), 0)
-
+        # When user opens a connection, set notification count to 0
+        self.redis_client.set('%s-%s-%s' % (REGULAR_MESSAGE_TYPE, self.chat_token, self.profile['token']), 0)
         # add user to the channel if it's not there.
-        logger.info("adding {} to channel: {}".format(self.authentication_token, self.chat_token))
-        self.redis_client.sadd('%s-%s' % ('members', self.chat_token), self.authentication_token)
+        logger.info("adding {} to channel: {}".format(self.profile['token'], self.chat_token))
+        self.redis_client.sadd('%s-%s' % ('members', self.chat_token), self.profile['token'])
 
         pika_client.declare_queue(self.chat_token)
         pika_client.websocket = self
         websockets[self.chat_token].add(self)
 
-    def push_message_sent(self, *args, **kwargs):
-        logger.info("push message sent")
-
     def on_message(self, message):
-        self.redis_client = REDIS_CONNECTION
-        r = self.redis_client
-        ts = time.time()
+        ts = get_utc_timestamp()
         message_dict = json.loads(message)
-        message_dict.update({'timestamp': ts})
-        r.zadd(self.chat_token, ts, json.dumps(message_dict))
+        message_dict.update({'timestamp': ts, 'author': self.profile})
+        self.redis_client.zadd(self.chat_token, ts, json.dumps(message_dict))
+
         message_dict.update({'token': self.chat_token})
         pika_client.sample_message(json.dumps(message_dict))
 
-        # GET THE OTHER USERS OTHER THAN THE CURRENT
         members = self.redis_client.smembers('%s-%s' % ('members', self.chat_token))
-        members.discard(self.authentication_token)
+        members.discard(self.profile['token'])
 
         for other in members:
-            # INCREASE THE NOTIFICATION COUNT FOR USERS OTHER THAN CURRENT USER
-            self.redis_client.incr('%s-%s-%s' % ('message', self.chat_token, other))
+            # Increase notification count for users other than sender
+            self.redis_client.incr('%s-%s-%s' % (REGULAR_MESSAGE_TYPE, self.chat_token, other))
 
-        headers = {'Authorization': 'Token %s' % self.authentication_token, 'content-type': 'application/json'}
-        [members.discard(socket.authentication_token) for socket in websockets[self.chat_token]]
+        self.redis_client.set('%s-%s-%s' % (REGULAR_MESSAGE_TYPE, self.chat_token, self.profile['token']), 0)
 
-        data = {'chat_token': self.chat_token,
+        if REGULAR_MESSAGE_TYPE in NOTIFIABLE_MESSAGE_TYPES:
+            headers = {'Authorization': 'Token %s' % self.profile['token'], 'content-type': 'application/json'}
+            [members.discard(socket.profile['token']) for socket in websockets[self.chat_token]]
+
+            data = {
+                'chat_token': self.chat_token,
                 'receivers': list(members),
                 'body': message_dict['body'],
-                'type': 'message',
-                'author_id': message_dict.get('author', None)}
+                'type': REGULAR_MESSAGE_TYPE,
+                'author': message_dict['author']
+            }
 
-        client = AsyncHTTPClient()
-        request = HTTPRequest(PUSH_NOTIFICATION_URL, body=json.dumps(data), headers=headers, method='POST')
-        client.fetch(request, callback=self.push_message_sent)
+            client = AsyncHTTPClient()
+            request = HTTPRequest(PUSH_NOTIFICATION_URL, body=json.dumps(data), headers=headers, method='POST')
+            client.fetch(request, callback=push_notification_callback)
 
     def on_close(self):
         logger.info("closing connection")
         websockets[self.chat_token].discard(self)
+        ts = get_utc_timestamp()
+        # save logout timestamp for read-unread messages
+        self.redis_client.set('%s-%s-%s' % (self.chat_token, self.profile['token'], 'logout_at'), ts)
 
 
 class NotificationHandler(tornado.web.RequestHandler):
@@ -307,7 +359,7 @@ class NotificationHandler(tornado.web.RequestHandler):
         auth_token = auth_token.get('token')
         chat_token = args[0]
         redis_client = REDIS_CONNECTION
-        number = redis_client.get('%s-%s-%s' % ("message", chat_token, auth_token))
+        number = redis_client.get('%s-%s-%s' % (REGULAR_MESSAGE_TYPE, chat_token, auth_token))
         self.write(json.dumps({'notification': number}))
 
 
@@ -321,6 +373,28 @@ class NewChatRoomHandler(tornado.web.RequestHandler):
             data = self.request.body_arguments
             for token in data['tokens']:
                 redis_client.sadd('%s-%s' % ('members', chat_token), token)
+            self.clear()
+            self.set_status(200)
+            self.finish()
+        else:
+            self.set_status(400)
+            self.finish()
+
+
+class UnsubscribeHandler(tornado.web.RequestHandler):
+
+    def post(self, *args, **kwargs):
+        # TODO: unsubscribe from rabbitmq, close socket etc...
+        chat_token = args[0]
+        if self.request.body_arguments.get('tokens'):
+            redis_client = REDIS_CONNECTION
+            data = self.request.body_arguments
+            for token in data['tokens']:
+                redis_client.srem('%s-%s' % ('members', chat_token), token)
+                for socket in websockets[chat_token]:
+                    if socket.profile['token'] == token:
+                        socket.close()
+
             self.clear()
             self.set_status(200)
             self.finish()
@@ -349,7 +423,7 @@ class HistoryHandler(tornado.web.RequestHandler):
         for room in room_list.split(','):
             room_data = {
                 "room_name": room,
-                "unread_count": redis_client.get('%s-%s-%s' % ("message", room, auth_token.get("token"))) or 0,
+                "unread_count": redis_client.get('%s-%s-%s' % (REGULAR_MESSAGE_TYPE, room, auth_token.get("token"))) or 0,
                 "messages": [],
             }
 
@@ -373,6 +447,7 @@ app = tornado.web.Application([(r'/talk/chat/([a-zA-Z\-0-9\.:,_]+)/?', WebSocket
                                (r'/talk/item/([a-zA-Z\-0-9\.:,_]+)/?', ItemMessageHandler),
                                (r'/talk/notification/([a-zA-Z\-0-9\.:,_]+)/?', NotificationHandler),
                                (r'/talk/new-chat-room/([a-zA-Z\-0-9\.:,_]+)/?', NewChatRoomHandler),
+                               (r'/talk/unsubscribe/([a-zA-Z\-0-9\.:,_]+)/?', NewChatRoomHandler),
                                (r'/talk/old/([a-zA-Z\-0-9\.:,_]+)/?', OldMessagesHandler),
                                (r'/talk/history/([a-zA-Z\-0-9\.:,_]+)/?', HistoryHandler),
                                (r'/talk/?', IndexHandler)])
