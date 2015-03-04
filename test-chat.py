@@ -18,6 +18,19 @@ os.environ['HIPOCHAT_REDIS_DB'] = "3"
 
 import hipochat.chat
 import json
+from urlparse import urljoin
+
+BASE_URL = "http://127.0.0.1:8888/"
+
+CHAT_SYSTEM_TOKEN = "2D8E1425871325CD719A1D05389AEE8A"
+CHAT_SYSTEM_URL = "http://chat.thevoltapp.com/"
+
+
+def get_headers(token):
+    return {
+        'Authorization': "Token {}".format(token),
+        'Content-type': 'application/json',
+    }
 
 
 class TestChat(unittest.TestCase):
@@ -41,7 +54,6 @@ class TestChat(unittest.TestCase):
         ))
         ws.send(d)
         result = ws.recv()
-        print "result --- ", result
         ws.close()
         resp = requests.get(
             'http://127.0.0.1:8888/talk/history/room_hipo,room_foo?token=TOKEN_1234'
@@ -49,6 +61,52 @@ class TestChat(unittest.TestCase):
         data = json.loads(resp.content)
         assert data['results'][0]['messages'][0]["body"] == "hello world"
         assert len(data['results'][1]["messages"]) == 0
+
+    def test_kick(self):
+
+        ROOM_FOR_KICK = "letskick"
+
+        ws_thor = websocket.create_connection("ws://127.0.0.1:8888/talk/chat/{}/?token=thor".format(ROOM_FOR_KICK))
+        # TODO: wait until authorization
+        time.sleep(2)
+        d = json.dumps(dict(
+            body="thor is here.",
+            type="message"
+        ))
+        ws_thor.send(d)
+
+        ws = websocket.create_connection("ws://127.0.0.1:8888/talk/chat/{}/?token=marine".format(ROOM_FOR_KICK))
+        # TODO: wait until authorization
+        time.sleep(2)
+        d = json.dumps(dict(
+            body="go go go!",
+            type="message"
+        ))
+        ws.send(d)
+        ws.close()
+
+        # inject a kick item
+        base_url = urljoin(BASE_URL, "talk/item/" + ROOM_FOR_KICK + "/")
+        item_data = {
+            "action": "kick",
+            "token_to_kick": "thor",
+            "body": "thor has left the chat.",
+            "type": "system_message",
+            "token": ROOM_FOR_KICK,
+        }
+
+        headers = get_headers("thor")
+
+        r = requests.post(base_url, headers=headers, data=json.dumps(item_data))
+
+        assert r.status_code, 200
+
+        ws_thor.recv()
+        ws_thor.recv()
+        ws_thor.recv()
+
+        assert self.redis_conn.sismember("thor", "members-{}".format(ROOM_FOR_KICK)), 0
+
 
     def tearDown(self):
         self.process.terminate()
