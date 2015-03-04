@@ -120,9 +120,14 @@ class PikaClient(object):
         # TODO: decrement unread count
         for i in websockets[message['token']]:
             try:
+                if 'action' in message and message["action"] == "kick" and 'token_to_kick' in message:
+                    if i.authentication_token == message["token_to_kick"]:
+                        REDIS_CONNECTION.srem('%s-%s' % ('members', message['token']), message["token_to_kick"])
+                        i.close()
+                        continue
                 i.write_message(body)
-            except:
-                logger.exception("exception while writing message to client")
+            except Exception as error:
+                logger.exception("exception while writing message to client: {}".format(error.message))
 
     def on_basic_cancel(self, frame):
         logger.info('PikaClient: Basic Cancel Ok')
@@ -193,7 +198,7 @@ class OldMessagesHandler(tornado.web.RequestHandler):
         new_oldy = []
         for i in  oldy:
             data = json.loads(i[0])
-            data['timestamp'] = i[1]
+            data['timestamp'] = int(i[1])
             new_oldy.append(data)
         self.set_header("Content-Type", "application/json")
         self.write(json.dumps({'oldy': new_oldy}))
@@ -262,7 +267,7 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
     def on_message(self, message):
         self.redis_client = REDIS_CONNECTION
         r = self.redis_client
-        ts = time.time()
+        ts = int(time.time())
         message_dict = json.loads(message)
         message_dict.update({'timestamp': ts})
         r.zadd(self.chat_token, ts, json.dumps(message_dict))
@@ -368,7 +373,6 @@ class HistoryHandler(tornado.web.RequestHandler):
         self.finish()
 
 
-
 app = tornado.web.Application([(r'/talk/chat/([a-zA-Z\-0-9\.:,_]+)/?', WebSocketChatHandler),
                                (r'/talk/item/([a-zA-Z\-0-9\.:,_]+)/?', ItemMessageHandler),
                                (r'/talk/notification/([a-zA-Z\-0-9\.:,_]+)/?', NotificationHandler),
@@ -388,3 +392,4 @@ def run():
     pika_client = PikaClient(ioloop)
     pika_client.connect()
     ioloop.start()
+
