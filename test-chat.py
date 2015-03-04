@@ -103,7 +103,7 @@ class TestChat(unittest.TestCase):
         ws_thor.recv()
 
         self.assertFalse( self.redis_conn.sismember("thor", "members-{}".format(ROOM_FOR_KICK)))
-
+        self.assertRaises(websocket.WebSocketConnectionClosedException, ws_thor.recv)
 
     def tearDown(self):
         self.process.terminate()
