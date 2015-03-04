@@ -22,9 +22,6 @@ from urlparse import urljoin
 
 BASE_URL = "http://127.0.0.1:8888/"
 
-CHAT_SYSTEM_TOKEN = "2D8E1425871325CD719A1D05389AEE8A"
-CHAT_SYSTEM_URL = "http://chat.thevoltapp.com/"
-
 
 def get_headers(token):
     return {
@@ -105,7 +102,7 @@ class TestChat(unittest.TestCase):
         ws_thor.recv()
         ws_thor.recv()
 
-        assert self.redis_conn.sismember("thor", "members-{}".format(ROOM_FOR_KICK)), 0
+        self.assertFalse( self.redis_conn.sismember("thor", "members-{}".format(ROOM_FOR_KICK)))
 
 
     def tearDown(self):
