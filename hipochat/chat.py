@@ -125,6 +125,8 @@ class PikaClient(object):
                         REDIS_CONNECTION.srem('%s-%s' % ('members', message['token']), message["token_to_kick"])
                         i.close()
                         continue
+                        del message["token_to_kick"]
+                        del message["action"]   
                 i.write_message(body)
             except Exception as error:
                 logger.exception("exception while writing message to client: {}".format(error.message))
