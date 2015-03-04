@@ -1,4 +1,3 @@
 pika==0.9.13
 tornado==3.2
-requests
 redis

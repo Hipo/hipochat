@@ -1,7 +1,5 @@
 import os
 import json
-import requests
-import time
 import pika
 
 from _collections import defaultdict
@@ -208,14 +206,7 @@ class OldMessagesHandler(tornado.web.RequestHandler):
         redis_client.set('%s-%s-%s' % (REGULAR_MESSAGE_TYPE, chat_token, auth_token), 0)
 
         read_messages = redis_client.zrangebyscore(chat_token, '-inf', logout_at)
-        print "----- read messages ----", logout_at
-        print read_messages
-        print "----- read messages ----"
-
         unread_messages = redis_client.zrangebyscore(chat_token, '(%s' % logout_at, '+inf')
-        print "----- unread messages ----"
-        print unread_messages
-        print "----- unread messages ----"
 
         read_messages = [json.loads(v) for v in read_messages]
         unread_messages = [json.loads(v) for v in unread_messages]
@@ -267,7 +258,7 @@ class ItemMessageHandler(tornado.web.RequestHandler):
         if data_type in NOTIFIABLE_MESSAGE_TYPES:
             # Send push to only not connected members
             headers = {'Authorization': 'Token %s' % auth_token, 'content-type': 'application/json'}
-            [members.discard(socket.authentication_token) for socket in websockets[chat_token]]
+            [members.discard(socket.profile['token']) for socket in websockets[chat_token]]
 
             data = {'chat_token': chat_token, 'receivers': list(members),
                     'type': data_type, 'author': profile, 'body': body}
@@ -315,8 +306,6 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
         websockets[self.chat_token].add(self)
 
     def on_message(self, message):
-        self.redis_client = REDIS_CONNECTION
-        r = self.redis_client
         ts = get_utc_timestamp()
         message_dict = json.loads(message)
         message_dict.update({'timestamp': ts, 'author': self.profile})
@@ -354,6 +343,7 @@ class WebSocketChatHandler(tornado.websocket.WebSocketHandler):
         logger.info("closing connection")
         websockets[self.chat_token].discard(self)
         ts = get_utc_timestamp()
+        # save logout timestamp for read-unread messages
         self.redis_client.set('%s-%s-%s' % (self.chat_token, self.profile['token'], 'logout_at'), ts)
 
 
@@ -401,6 +391,10 @@ class UnsubscribeHandler(tornado.web.RequestHandler):
             data = self.request.body_arguments
             for token in data['tokens']:
                 redis_client.srem('%s-%s' % ('members', chat_token), token)
+                for socket in websockets[chat_token]:
+                    if socket.profile['token'] == token:
+                        socket.close()
+
             self.clear()
             self.set_status(200)
             self.finish()
@@ -453,7 +447,7 @@ app = tornado.web.Application([(r'/talk/chat/([a-zA-Z\-0-9\.:,_]+)/?', WebSocket
                                (r'/talk/item/([a-zA-Z\-0-9\.:,_]+)/?', ItemMessageHandler),
                                (r'/talk/notification/([a-zA-Z\-0-9\.:,_]+)/?', NotificationHandler),
                                (r'/talk/new-chat-room/([a-zA-Z\-0-9\.:,_]+)/?', NewChatRoomHandler),
-                                (r'/talk/unsubscribe/([a-zA-Z\-0-9\.:,_]+)/?', NewChatRoomHandler),
+                               (r'/talk/unsubscribe/([a-zA-Z\-0-9\.:,_]+)/?', NewChatRoomHandler),
                                (r'/talk/old/([a-zA-Z\-0-9\.:,_]+)/?', OldMessagesHandler),
                                (r'/talk/history/([a-zA-Z\-0-9\.:,_]+)/?', HistoryHandler),
                                (r'/talk/?', IndexHandler)])
