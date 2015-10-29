@@ -26,7 +26,7 @@ if not PROFILE_URL:
     raise Exception('we need a push notification url, please pass environment variable: HIPOCHAT_PROFILE_URL')
 
 RABBIT_URL = os.getenv('HIPOCHAT_RABBIT_URL', None)
-if not PROFILE_URL:
+if not RABBIT_URL:
     raise Exception('we need a push notification url, please pass environment variable: HIPOCHAT_RABBIT_URL')
 
 RABBIT_USERNAME = os.getenv('HIPOCHAT_RABBIT_USERNAME', 'guest')
