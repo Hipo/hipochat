@@ -3,6 +3,7 @@ from setuptools import setup
 setup(
     name='hipochat',
     version='0.1',
+    description='Websocket Chat Server using Tornado for backend RabbitMQ for message queue',
     long_description=__doc__,
     packages=['hipochat'],
     include_package_data=True,
